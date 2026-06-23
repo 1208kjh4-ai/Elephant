@@ -5,6 +5,7 @@
 1. Git-Hub 상의 모든 파일을 Zip으로 다운로드 합니다.
 
 2. 설치를 위해 파일 경로를 생성해 줍니다 
+
 Rhino 7  = %APPDATA%/Roaming/McNeel/Rhinoceros/7.0/Scripts/Elephant
 Rhino 8  = %APPDATA%/Roaming/McNeel/Rhinoceros/8.0/Scripts/Elephant
 
@@ -13,11 +14,13 @@ Rhino 8  = %APPDATA%/Roaming/McNeel/Rhinoceros/8.0/Scripts/Elephant
 4. Elephant 폴더 안에 모든 파일은 압축해제하여 넣습니다.
 
 5. 압축해제 시 폴더트리는 다음과 같아야 합니다. 
+
 .../APPDATA/Roaming/McNeel/Rhinoceros/X.0/Scripts/Elephant               ( O )
 .../APPDATA/Roaming/McNeel/Rhinoceros/X.0/Scripts/Elephant-main          ( X )
 .../APPDATA/Roaming/McNeel/Rhinoceros/X.0/Scripts/Elephant/Elephant-main ( X )
 
 6. 툴바 설치
+
 Rhino7 버전 = ElephantToolsR7.rui 파일을 라이노 화면에 드래그&드롭 합니다.
 Rhino8 버전 = ElephantTools.rhc 파일을 라이노 상에 드래그&드롭합니다.
 
