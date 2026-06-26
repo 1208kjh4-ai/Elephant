@@ -16,6 +16,8 @@ SHORTCUT_SETTINGS = {
     "Sliding": '! _-RunPythonScript "Elephant/Sliding"',
     "Folding": '! _-RunPythonScript "Elephant/Folding"',
     "Spinning": '! _-RunPythonScript "Elephant/Spinning"',
+    "Curtainwall": '! _-RunPythonScript "Elephant/Curtainwall"',
+    "Handrail": '! _-RunPythonScript "Elephant/Handrail"'
 }
 
 # ==============================================================================
