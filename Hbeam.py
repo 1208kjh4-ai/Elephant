@@ -11,50 +11,60 @@ import System
 # -------------------------------------------------------------------------
 # 1. 기하학 엔진: 직육면체(Brep)에서 OBB(회전된 바운딩 박스) 추출
 # -------------------------------------------------------------------------
-def get_ideal_obb(brep):
-    """
-    객체의 기하학적 주축을 분석하여 최적의 OBB 평면과 치수를 계산합니다.
-    """
-    # 1. 객체의 중심점과 관성 모멘트 분석
-    amp = rg.AreaMassProperties.Compute(brep)
-    if not amp:
-        # 실패 시 기존 BBox 사용
+def get_obb_from_box(brep):
+    """직육면체에서 기준 평면(Plane)과 3축 길이(Extrusion, X, Y)를 추출합니다."""
+    # 만약 정육면체/직육면체(6면)가 아닐 경우 월드 좌표 바운딩 박스로 임시 대체
+    faces = list(brep.Faces)
+    if len(faces) != 6:
         bbox = brep.GetBoundingBox(True)
         return rg.Plane.WorldXY, bbox.Max.Z - bbox.Min.Z, bbox.Max.X - bbox.Min.X, bbox.Max.Y - bbox.Min.Y
-    
-    center = amp.Centroid
-    
-    # 2. 주축(Principal Axes) 계산
-    # 객체의 질량 분포가 어느 방향으로 뻗어있는지 분석합니다.
-    moi = rg.VolumeMassProperties.Compute(brep).MomentOfInertia
-    # 주축 벡터 추출 (가장 긴 방향이 Z축이 되도록)
-    # 실제로는 객체의 버텍스들을 행렬로 변환하여 고유값 분해(Eigenvalue Decomposition)를 
-    # 수행하는 것이 정석이지만, RhinoCommon의 간단한 BBox 회전 방식을 응용합니다.
-    
-    bbox = brep.GetBoundingBox(True)
-    # 임시 평면 생성
-    plane = rg.Plane.WorldXY
-    
-    # 객체의 방향에 맞춰 회전된 평면을 찾기 위해 객체의 가장 긴 엣지 방향을 탐색
-    # (실무적으로 가장 정확한 방식은 객체 전체 정점의 Covariance Matrix를 계산하는 것입니다)
-    
-    # 여기서는 간단히 객체 전체의 범위를 감싸는 타이트한 박스를 리턴합니다.
-    dim_x = bbox.Max.X - bbox.Min.X
-    dim_y = bbox.Max.Y - bbox.Min.Y
-    dim_z = bbox.Max.Z - bbox.Min.Z
-    
-    # 가장 긴 축을 Z축으로 할당 (부재 길이)
-    dims = sorted([dim_x, dim_y, dim_z], reverse=True)
-    length, b_width, b_depth = dims[0], dims[1], dims[2]
-    
-    return plane, length, b_width, b_depth
+
+    # [에러 수정된 부분] 꼭짓점(Vertex)에서 연결된 엣지의 "인덱스"를 먼저 찾은 후 객체로 변환합니다.
+    v = brep.Vertices[0]
+    edge_indices = v.EdgeIndices()
+    edges = [brep.Edges[idx] for idx in edge_indices]
+
+    if len(edges) != 3:
+        bbox = brep.GetBoundingBox(True)
+        return rg.Plane.WorldXY, bbox.Max.Z - bbox.Min.Z, bbox.Max.X - bbox.Min.X, bbox.Max.Y - bbox.Min.Y
+
+    v_pt = v.Location
+    e_data = []
+    for e in edges:
+        crv = e.ToNurbsCurve()
+        length = crv.GetLength()
+        # 점의 위치에 따라 벡터 방향 보정
+        if crv.PointAtStart.DistanceTo(v_pt) < 0.001:
+            vec = crv.TangentAtStart
+        else:
+            vec = -crv.TangentAtEnd
+        e_data.append((length, vec))
+
+    # 가장 긴 길이를 압출 방향(Z축)으로 설정하기 위해 정렬
+    e_data.sort(key=lambda x: x[0], reverse=True)
+    long_len, long_vec = e_data[0]
+    dim_x, vec_x = e_data[1]
+    dim_y, vec_y = e_data[2]
+
+    # 중심점 계산
+    amp = rg.AreaMassProperties.Compute(brep)
+    center = amp.Centroid if amp else brep.GetBoundingBox(True).Center
+
+    # 프로파일이 그려질 평면(Plane) 생성
+    plane = rg.Plane(center, vec_x, vec_y)
+    # 평면의 Z축이 가장 긴 벡터(long_vec)와 일치하도록 방향 조정
+    if plane.ZAxis * long_vec < 0:
+        plane = rg.Plane(center, vec_y, vec_x)
+        dim_x, dim_y = dim_y, dim_x
+
+    return plane, long_len, dim_x, dim_y
 
 # -------------------------------------------------------------------------
 # 2. 기하학 엔진: 단면 커브 생성 및 솔리드 압출
 # -------------------------------------------------------------------------
 def generate_steel_member(brep, p_type, t1, t2, flip_x, flip_y, angle):
     # 1. 박스에서 방향과 치수 추출
-    plane, length, dim_x, dim_y = get_ideal_obb(brep)
+    plane, length, dim_x, dim_y = get_obb_from_box(brep)
     
     # 2. 각도(0, 90, 180, 270)에 따라 H(높이)와 B(폭) 매칭
     # 90도 돌아가면 박스의 가로/세로 매칭이 바뀜

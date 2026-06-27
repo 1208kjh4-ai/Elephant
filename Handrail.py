@@ -62,41 +62,58 @@ class RailingEngine:
         z_panel_top = z_bottom + panel_height
         z_handrail = total_height
 
-        crv_length = self.base_curve.GetLength()
-        
-        span_count = int(round(crv_length / post_interval))
-        if span_count < 1: span_count = 1
-        if span_count > 300: span_count = 300 
-        
-        divide_params = self.base_curve.DivideByCount(span_count, True)
-        divide_points = [self.base_curve.PointAt(t) for t in divide_params]
-        
-        if post_on:
-            for pt in divide_points:
-                post_cyl = rg.Cylinder(rg.Circle(rg.Plane(pt, rg.Vector3d.ZAxis), self.post_radius), total_height)
-                out_general.append(post_cyl.ToBrep(True, True))
-                
-        spans = []
-        for i in range(span_count):
-            t0 = divide_params[i]
-            t1 = divide_params[i+1]
-            sub_crv = self.base_curve.Trim(t0, t1)
-            if not sub_crv: continue
-                
-            # 💡 [수정된 논리] 음수 연장 방식 대신, 길이를 재서 직접 잘라내는(Trim) 방식 적용
-            if not post_on and panel_gap > 0: 
-                sub_len = sub_crv.GetLength()
-                if sub_len > panel_gap:
-                    # 양 끝에서 gap/2 만큼 떨어진 파라미터(위치)를 찾음
-                    success0, pt0_t = sub_crv.LengthParameter(panel_gap / 2.0)
-                    success1, pt1_t = sub_crv.LengthParameter(sub_len - (panel_gap / 2.0))
-                    # 해당 파라미터 기준으로 커브를 잘라냄
-                    if success0 and success1 and pt0_t < pt1_t:
-                        sub_crv = sub_crv.Trim(pt0_t, pt1_t)
-            
-            if sub_crv: spans.append(sub_crv)
+        segments = self.base_curve.DuplicateSegments()
+        if not segments or len(segments) == 0:
+            segments = [self.base_curve]
 
-        for span_crv in spans:
+        post_points = []
+        spans = []
+
+        for seg in segments:
+            seg_len = seg.GetLength()
+            span_count = int(round(seg_len / post_interval))
+            if span_count < 1: span_count = 1
+            if span_count > 300: span_count = 300 
+            
+            div_params = seg.DivideByCount(span_count, True)
+            if not div_params: continue
+
+            if post_on:
+                for t in div_params:
+                    pt = seg.PointAt(t)
+                    is_dup = False
+                    for existing_pt in post_points:
+                        if pt.DistanceTo(existing_pt) < 1.0:
+                            is_dup = True
+                            break
+                    
+                    if not is_dup:
+                        post_points.append(pt)
+                        post_cyl = rg.Cylinder(rg.Circle(rg.Plane(pt, rg.Vector3d.ZAxis), self.post_radius), total_height)
+                        out_general.append(post_cyl.ToBrep(True, True))
+
+            if seg.IsClosed:
+                parts = seg.Split(div_params)
+                if parts: spans.extend(parts)
+            else:
+                for i in range(len(div_params)-1):
+                    part = seg.Trim(div_params[i], div_params[i+1])
+                    if part: spans.append(part)
+
+        final_spans = []
+        for span in spans:
+            if not post_on and panel_gap > 0: 
+                sub_len = span.GetLength()
+                if sub_len > panel_gap:
+                    success0, pt0_t = span.LengthParameter(panel_gap / 2.0)
+                    success1, pt1_t = span.LengthParameter(sub_len - (panel_gap / 2.0))
+                    if success0 and success1 and pt0_t < pt1_t:
+                        trimmed = span.Trim(pt0_t, pt1_t)
+                        if trimmed: final_spans.append(trimmed)
+            else:
+                final_spans.append(span)
+
+        for span_crv in final_spans:
             if panel_rails_on:
                 for z_val in [z_bottom, z_panel_top]:
                     bar_crv = span_crv.Duplicate()
@@ -107,38 +124,68 @@ class RailingEngine:
                 base_panel_crv = span_crv.Duplicate()
                 base_panel_crv.Translate(rg.Vector3d(0, 0, z_bottom))
                 thickness = 10.0
+                success_solid = False
                 
                 try:
-                    t_mid = base_panel_crv.Domain.Mid
-                    vec_t = base_panel_crv.TangentAt(t_mid)
-                    vec_n = rg.Vector3d.CrossProduct(vec_t, rg.Vector3d.ZAxis)
+                    plane = rg.Plane.WorldXY
+                    c1_arr = base_panel_crv.Offset(plane, thickness/2.0, self.tol, rg.CurveOffsetCornerStyle.Sharp)
+                    c2_arr = base_panel_crv.Offset(plane, -thickness/2.0, self.tol, rg.CurveOffsetCornerStyle.Sharp)
+
+                    if c1_arr and c2_arr and len(c1_arr) == 1 and len(c2_arr) == 1:
+                        c1 = c1_arr[0]
+                        c2 = c2_arr[0]
+                        c2.Reverse()
+                        
+                        l1 = rg.Line(c1.PointAtEnd, c2.PointAtStart).ToNurbsCurve()
+                        l2 = rg.Line(c2.PointAtEnd, c1.PointAtStart).ToNurbsCurve()
+                        
+                        joined = rg.Curve.JoinCurves([c1, l1, c2, l2], self.tol * 2)
+                        if joined and joined[0].IsClosed:
+                            extrusion_srf = rg.Surface.CreateExtrusion(joined[0], rg.Vector3d(0, 0, panel_height))
+                            if extrusion_srf:
+                                brep = extrusion_srf.ToBrep()
+                                capped = brep.CapPlanarHoles(self.tol)
+                                if capped:
+                                    out_panels.append(capped)
+                                    success_solid = True
+                                else:
+                                    out_panels.append(brep)
+                                    success_solid = True
+                except:
+                    pass
                     
-                    if vec_n.Length < 1e-6: 
-                        vec_n = rg.Vector3d.XAxis
-                    vec_n.Unitize()
-                    
-                    crv_right = base_panel_crv.Duplicate()
-                    crv_right.Translate(vec_n * thickness)
-                    
-                    crv_left = base_panel_crv.Duplicate()
-                    crv_left.Translate(vec_n * -thickness)
-                    crv_left.Reverse() 
-                    
-                    line1 = rg.Line(crv_right.PointAtEnd, crv_left.PointAtStart).ToNurbsCurve()
-                    line2 = rg.Line(crv_left.PointAtEnd, crv_right.PointAtStart).ToNurbsCurve()
-                    
-                    joined = rg.Curve.JoinCurves([crv_right, line1, crv_left, line2])
-                    if joined and joined[0].IsClosed:
-                        extrusion_srf = rg.Surface.CreateExtrusion(joined[0], rg.Vector3d(0, 0, panel_height))
-                        if extrusion_srf:
-                            wall_brep = extrusion_srf.ToBrep()
-                            capped = wall_brep.CapPlanarHoles(self.tol)
-                            if capped:
-                                out_panels.append(capped)
-                            else:
-                                out_panels.append(wall_brep)
-                                
-                except Exception as e:
+                if not success_solid:
+                    try:
+                        t_mid = base_panel_crv.Domain.Mid
+                        vec_t = base_panel_crv.TangentAt(t_mid)
+                        vec_n = rg.Vector3d.CrossProduct(vec_t, rg.Vector3d.ZAxis)
+                        
+                        if vec_n.Length < 1e-6: vec_n = rg.Vector3d.XAxis
+                        vec_n.Unitize()
+                        
+                        crv_right = base_panel_crv.Duplicate()
+                        crv_right.Translate(vec_n * (thickness/2.0))
+                        
+                        crv_left = base_panel_crv.Duplicate()
+                        crv_left.Translate(vec_n * -(thickness/2.0))
+                        crv_left.Reverse() 
+                        
+                        line1 = rg.Line(crv_right.PointAtEnd, crv_left.PointAtStart).ToNurbsCurve()
+                        line2 = rg.Line(crv_left.PointAtEnd, crv_right.PointAtStart).ToNurbsCurve()
+                        
+                        joined = rg.Curve.JoinCurves([crv_right, line1, crv_left, line2])
+                        if joined and joined[0].IsClosed:
+                            extrusion_srf = rg.Surface.CreateExtrusion(joined[0], rg.Vector3d(0, 0, panel_height))
+                            if extrusion_srf:
+                                wall_brep = extrusion_srf.ToBrep()
+                                capped = wall_brep.CapPlanarHoles(self.tol)
+                                if capped:
+                                    out_panels.append(capped)
+                                    success_solid = True
+                    except:
+                        pass
+                
+                if not success_solid:
                     srf = rg.Surface.CreateExtrusion(base_panel_crv, rg.Vector3d(0, 0, panel_height))
                     if srf: out_panels.append(srf.ToBrep())
                     
@@ -154,11 +201,12 @@ class RailingEngine:
             elif panel_type == 2: 
                 if bar_qty > 0:
                     v_params = span_crv.DivideByCount(bar_qty + 1, True)
-                    for t in v_params[1:-1]:
-                        pt = span_crv.PointAt(t)
-                        p0 = pt + rg.Vector3d(0, 0, z_bottom) 
-                        v_cyl = rg.Cylinder(rg.Circle(rg.Plane(p0, rg.Vector3d.ZAxis), self.sub_member_radius), panel_height)
-                        out_general.append(v_cyl.ToBrep(True, True))
+                    if v_params:
+                        for t in v_params[1:-1]:
+                            pt = span_crv.PointAt(t)
+                            p0 = pt + rg.Vector3d(0, 0, z_bottom) 
+                            v_cyl = rg.Cylinder(rg.Circle(rg.Plane(p0, rg.Vector3d.ZAxis), self.sub_member_radius), panel_height)
+                            out_general.append(v_cyl.ToBrep(True, True))
 
         if handrail_type == 1:
             hr_crv = self.base_curve.Duplicate()
@@ -169,7 +217,7 @@ class RailingEngine:
 
     def create_pipe(self, curve, radius):
         pipes = rg.Brep.CreatePipe(curve, radius, False, rg.PipeCapMode.Flat, True, self.tol, self.doc.ModelAngleToleranceRadians)
-        return pipes if pipes else []
+        return list(pipes) if pipes else []
 
 
 # --- [3] 실시간 제어 창 (Eto Modeless Form) ---
@@ -188,7 +236,6 @@ class RailingModelessDialog(forms.Form):
         self.Resizable = True
         self.Topmost = True 
 
-        # Sticky 메모리 불러오기
         def_height = sc.sticky.get("RLG_Height", 1200)
         def_interval = sc.sticky.get("RLG_Interval", 1500)
         def_gap = sc.sticky.get("RLG_Gap", 20.0)
@@ -222,7 +269,6 @@ class RailingModelessDialog(forms.Form):
         self.btn_create = forms.Button(Text="생성")
         self.btn_cancel = forms.Button(Text="취소")
 
-        # 이벤트 바인딩
         self.nud_height.ValueChanged += self.RefreshPreview
         self.btn_apply_interval.Click += self.RefreshPreview 
         self.chk_bottom_gap.CheckedChanged += self.RefreshPreview
@@ -340,12 +386,69 @@ class RailingModelessDialog(forms.Form):
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
 
+# --- [4] 메인 실행 함수 (💡 직접 그린 베이스 커브 레이어 자동 정렬 추가됨) ---
 def main():
-    crv_id = rs.GetObject("베이스 커브 선택.", rs.filter.curve)
-    if not crv_id: return
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("기준 커브 또는 객체의 모서리 선택")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
+    go.SubObjectSelect = True  
+    go.AcceptNothing(True)     
     
-    base_curve = rs.coercecurve(crv_id)
-    if not base_curve: return
+    opt_polyline = go.AddOption("Polyline")
+    opt_curve = go.AddOption("Curve")
+    
+    base_curve = None
+    target_layer = "Railing_BaseCrv"
+    
+    while True:
+        get_rc = go.Get()
+        
+        if get_rc == Rhino.Input.GetResult.Object:
+            obj_ref = go.Object(0)
+            crv = obj_ref.Curve()
+            if crv:
+                base_curve = crv.DuplicateCurve() 
+            break
+            
+        elif get_rc == Rhino.Input.GetResult.Option:
+            opt_idx = go.Option().Index
+            
+            # [DrawPolyline 옵션]
+            if opt_idx == opt_polyline:
+                rs.UnselectAllObjects()
+                if rs.Command("_Polyline"):
+                    created = rs.LastCreatedObjects()
+                    if created:
+                        # 💡 Railing_BaseCrv 레이어가 없다면 생성 후 객체 할당
+                        if not rs.IsLayer(target_layer):
+                            rs.AddLayer(target_layer, System.Drawing.Color.DarkGray)
+                        rs.ObjectLayer(created[0], target_layer)
+                        
+                        base_curve = rs.coercecurve(created[0]).DuplicateCurve()
+                        break
+                    
+            # [DrawCurve 옵션]
+            elif opt_idx == opt_curve:
+                rs.UnselectAllObjects()
+                if rs.Command("_Curve"):
+                    created = rs.LastCreatedObjects()
+                    if created:
+                        # 💡 Railing_BaseCrv 레이어가 없다면 생성 후 객체 할당
+                        if not rs.IsLayer(target_layer):
+                            rs.AddLayer(target_layer, System.Drawing.Color.DarkGray)
+                        rs.ObjectLayer(created[0], target_layer)
+                        
+                        base_curve = rs.coercecurve(created[0]).DuplicateCurve()
+                        break
+                        
+            go.SetCommandPrompt("다시 선택하거나 옵션을 선택하세요")
+            continue
+            
+        else:
+            break
+
+    if not base_curve:
+        return
 
     dlg = RailingModelessDialog()
     dlg.setup_curve(base_curve)

@@ -10,14 +10,17 @@ SHORTCUT_SETTINGS = {
     "Cross": '! _-RunPythonScript "Elephant/Cross.py"',
     "Tree": '! _-RunPythonScript "Elephant/ArrayTree.py"',
     "AA": '! _-RunPythonScript "Elephant/ArrayBetween"',
-    "Parking": '! _-RunPythonScript "Elephant/Parking"',
     "Lane": '! _-RunPythonScript "Elephant/Lane"',
     "Swing": '! _-RunPythonScript "Elephant/Swing"',
     "Sliding": '! _-RunPythonScript "Elephant/Sliding"',
     "Folding": '! _-RunPythonScript "Elephant/Folding"',
     "Spinning": '! _-RunPythonScript "Elephant/Spinning"',
     "Curtainwall": '! _-RunPythonScript "Elephant/Curtainwall"',
-    "Handrail": '! _-RunPythonScript "Elephant/Handrail"'
+    "Handrail": '! _-RunPythonScript "Elephant/Handrail"',
+    "SpiralStair": '! _-RunPythonScript "Elephant/SpiralStair"',
+    "SpaceTruss": '! _-RunPythonScript "Elephant/SpaceTruss"',
+    "3DTruss": '! _-RunPythonScript "Elephant/3DTruss"',
+    "Hbeam": '! _-RunPythonScript "Elephant/Hbeam"',
 }
 
 # ==============================================================================
