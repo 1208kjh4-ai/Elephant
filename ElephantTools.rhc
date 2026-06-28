@@ -7,8 +7,8 @@
   </name>
   <!--Tab panel collection definitions and dock bar placement information-->
   <dock_bars major_ver="1" minor_ver="0">
-    <dock_bar guid="e7353aeb-355d-4120-baba-0d1f5a57e0bd">
-      <placement dock_location="Floating" float_point="1060,295" float_size="140,180" visible="True" />
+    <dock_bar guid="ae252673-20ef-4164-ba8f-36c773de404b">
+      <placement dock_location="Floating" float_point="1211,305" float_size="140,180" visible="True" />
       <tabs name="Elephant Tools" selected_item="65f57f9c-2db2-4ba9-a6b5-46a910938d5c" torn_off="True" display_style="BitmapAndText">
         <name>
           <locale_1033>Elephant Tools</locale_1033>
@@ -57,14 +57,14 @@
                   <left_macro guid="da2237cf-586a-4a15-b262-4067df58fef1" modified="True" />
                 </tool_bar_item>
                 <tool_bar_item guid="dfe823da-3fb1-4b23-893b-46e481f32cf7" modified="True" button_type="Separator" />
+                <tool_bar_item guid="6ff36df7-7d0f-4914-8933-78e415871b48" modified="True">
+                  <left_macro guid="6d1b7dac-7c23-4a91-b0b6-1e4bd7da2f3d" modified="True" />
+                </tool_bar_item>
                 <tool_bar_item guid="45a3c2ca-d201-4585-8bdd-5af0a1700a7b" modified="True">
                   <left_macro guid="77f5dcb4-9366-40ae-9f63-1c460bdedc2f" modified="True" />
                 </tool_bar_item>
                 <tool_bar_item guid="f3df7645-de3c-461b-b5e9-6c82e2eaba76" modified="True">
                   <left_macro guid="863bcfef-059d-47f8-83e8-1135656b1787" modified="True" />
-                </tool_bar_item>
-                <tool_bar_item guid="6ff36df7-7d0f-4914-8933-78e415871b48" modified="True">
-                  <left_macro guid="6d1b7dac-7c23-4a91-b0b6-1e4bd7da2f3d" modified="True" />
                 </tool_bar_item>
                 <tool_bar_item guid="262a0199-a125-4cc8-a36f-682e4299f450" modified="True">
                   <left_macro guid="955f6f39-a008-4c75-a938-608a6d742583" modified="True" />
@@ -82,6 +82,10 @@
                 </tool_bar_item>
                 <tool_bar_item guid="555c987d-0bea-47e9-90f8-5133d8bbe7dc" modified="True">
                   <left_macro guid="9ea85a35-f78c-4867-bdd9-6d160a49772a" modified="True" />
+                </tool_bar_item>
+                <tool_bar_item guid="bcf66bd9-2601-474e-95ca-1fecb1b53051" modified="True" button_type="Separator" />
+                <tool_bar_item guid="18bbe44d-793c-48d4-9d42-ad23a44cc2ab" modified="True">
+                  <left_macro guid="1a435a1e-77bd-4925-8260-1e55e30a331e" modified="True" />
                 </tool_bar_item>
               </tool_bar_items>
             </tool_bar>
@@ -127,7 +131,6 @@
             </tool_bar>
             <tool_bar source_guid="00211289-60a5-460b-88dc-cc667b234dbd" modified="True">
               <tool_bar_items>
-                <tool_bar_item />
                 <tool_bar_item />
                 <tool_bar_item source_guid="c8c687bd-77e8-4eef-8f6b-636b7be082bb" />
                 <tool_bar_item source_guid="6edce929-57a9-4077-9b43-bcf41f9a1a1b" />
@@ -272,6 +275,12 @@
               <svg_name>107ffec8-a7e4-47da-9c57-a1e722aec4ea.svg</svg_name>
               <light_svg>&lt;svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"&gt;&lt;defs&gt;&lt;style&gt;.cls-1,.cls-2,.cls-3{stroke-width:0px;}.cls-2{fill:#ea0101;}.cls-3{fill:#bbbdc0;}&lt;/style&gt;&lt;/defs&gt;&lt;path class="cls-3" d="m15.546,27.264c-5.765,0-10.454-4.77-10.454-10.632,0-.435.026-.872.078-1.3h0c.637-5.32,5.098-9.332,10.376-9.332,5.765,0,10.454,4.77,10.454,10.632s-4.69,10.632-10.454,10.632Zm0-20.091c-4.696,0-8.664,3.568-9.232,8.301h0c-.046.381-.069.77-.069,1.158,0,5.216,4.172,9.459,9.3,9.459s9.3-4.243,9.3-9.459-4.172-9.459-9.3-9.459Z" /&gt;&lt;polygon class="cls-1" points="6.441 15.903 5.345 15.721 6.601 6.209 22.971 3.351 25.939 13.882 24.876 14.217 22.208 4.751 7.621 7.288 6.441 15.903" /&gt;&lt;path class="cls-2" d="m4.307,29l-1.307-.27,2.292-13.042c.638-5.547,5.151-9.767,10.491-9.767,5.051,0,9.196,3.26,10.316,8.115l3.901,13.426-1.276.402-3.954-13.614.007-.002c-1.013-4.144-4.611-6.919-8.994-6.919-4.668,0-8.613,3.689-9.177,8.579l-2.299,13.091Z" /&gt;&lt;/svg&gt;</light_svg>
             </icon>
+            <icon guid="a5938388-c105-442e-afa6-124043b7357d" modified="True">
+              <svg_name>0c71a00a-7d9b-43ba-aa24-727a2c597a0c.svg</svg_name>
+              <light_svg>&lt;svg width="48" height="48" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0pt 0pt 48pt 48pt" fill-dark="#FFF" stroke-dark="none"&gt;
+  &lt;image fill="none" fill-dark="none" stroke-dark="none" href="data:image/png;base64,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" width="48" height="48" /&gt;
+&lt;/svg&gt;</light_svg>
+            </icon>
             <icon guid="58d27b4c-ab58-4f6c-b666-d1a00b14c18f" modified="True">
               <svg_name>b45f4e5b-70f2-4a17-a644-238f56b88409.svg</svg_name>
               <light_svg>&lt;svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 32 32"&gt;&lt;defs&gt;&lt;style&gt;.cls-1{fill:url(#linear-gradient);}.cls-1,.cls-2,.cls-3,.cls-4{stroke-width:0px;}.cls-2,.cls-5{fill-rule:evenodd;}.cls-3,.cls-5{fill:none;}.cls-5{stroke:#000;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.2px;}.cls-4{fill:#c5c5c5;}&lt;/style&gt;&lt;linearGradient id="linear-gradient" x1="-2.271" y1="1955.25" x2="25.465" y2="1955.25" gradientTransform="translate(3.903 -1952.25)" gradientUnits="userSpaceOnUse"&gt;&lt;stop offset="0" stop-color="#564fca" /&gt;&lt;stop offset="1" stop-color="#c8c5ff" /&gt;&lt;/linearGradient&gt;&lt;/defs&gt;&lt;rect class="cls-1" y="1" width="31" height="4" /&gt;&lt;path class="cls-2" d="m0,6V0h32v6H0Zm31-2V1H1s0,3,0,3h30Z" marker-end="none" marker-start="none" /&gt;&lt;path class="cls-2" d="m0,32V4h31.999v28H0Zm31-1V6H1v25h30Z" marker-end="none" marker-start="none" /&gt;&lt;rect class="cls-4" x="1" y="28" width="30" height="3" /&gt;&lt;rect class="cls-3" x="1" y="6" width="29" height="22" /&gt;&lt;path class="cls-5" d="m5,11.32s4-2,9,4l4-2s-2,3-2,5c0,1,2,1,2,1l8-4-8,8" /&gt;&lt;/svg&gt;</light_svg>
@@ -334,107 +343,11 @@ xcZGJyZo1gqxqCpmrRBrdz3cNOqCkNIfcHxrAK0wZuIAAAAASUVORK5CYII=</png>
             </icon>
           </icons>
           <macros>
-            <macro guid="1eae5050-8acf-4424-a7b1-9d8b63d7998a" modified="True" bitmap_guid="58d27b4c-ab58-4f6c-b666-d1a00b14c18f">
-              <button_text>byRhino home</button_text>
-              <menu_text>byRhino home</menu_text>
-              <help_text>byRhino home</help_text>
-              <tooltip>byRhino home</tooltip>
-              <script>! _byRhinoHome</script>
-            </macro>
-            <macro guid="cad4d026-4fd9-4fb8-85a1-8ee30973e341" modified="True" bitmap_guid="5b7d95a2-de1d-42e9-86ad-a7fcccb9b140">
-              <button_text>Full rounded curve</button_text>
-              <menu_text>Full rounded curve</menu_text>
-              <help_text>Full rounded curve</help_text>
-              <tooltip>Full rounded curve</tooltip>
-              <script>! _FullRoundCrv</script>
-            </macro>
-            <macro guid="863bcfef-059d-47f8-83e8-1135656b1787" modified="True" bitmap_guid="75053ed1-76fc-4db9-998a-d64ccfa896ba">
-              <text>
-                <locale_1033>SpiralStair</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/SpiralStair"</script>
-            </macro>
-            <macro guid="e74dc83f-d34b-4c62-a009-179d0d4576ad" modified="True" bitmap_guid="27fb023b-2b4f-408d-b25d-93e233591c69">
-              <button_text>Rebuild curve control point by length</button_text>
-              <menu_text>Rebuild curve control point by length</menu_text>
-              <help_text>Rebuild curve control point by length</help_text>
-              <tooltip>Rebuild curve control point by length</tooltip>
-              <script>! _RebuildCrvCountByLength</script>
-            </macro>
-            <macro guid="da2237cf-586a-4a15-b262-4067df58fef1" modified="True" bitmap_guid="a997b006-02c7-4aa5-a0e0-4cb2200db378">
-              <text>
-                <locale_1033>Spinning_Door</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Spinning"</script>
-            </macro>
-            <macro guid="dcb5bbc0-50ae-43e6-9ee0-ea8010245b03" modified="True">
-              <text>
-                <locale_1033>Macro 04</locale_1033>
-              </text>
-              <tooltip>Tips</tooltip>
-              <script>! _-RunPythonScript "Elephant/ShowShortCuts"</script>
-            </macro>
-            <macro guid="94c2a9a2-cd8d-4a70-b82f-4921ca41d833" modified="True" bitmap_guid="bb3f33e7-ae0a-4ef5-9cda-3c721838ab6d">
-              <text>
-                <locale_1033>Swing_Door</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Swing"</script>
-            </macro>
-            <macro guid="634ce896-57fc-4997-a877-73d23ac01ad3" modified="True" bitmap_guid="d7d25fa3-758a-452c-b01d-e6152ce73ddd">
-              <text>
-                <locale_1033>Update</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Update"</script>
-            </macro>
             <macro guid="e289898b-eb64-43a8-ae36-8f512da118cc" modified="True">
               <text>
                 <locale_1033>Macro 05</locale_1033>
               </text>
               <script>! _-RunPythonScript "Elephant/3DTruss"</script>
-            </macro>
-            <macro guid="163cf917-3e3a-4e51-aec7-66a92ad7dacc" modified="True" bitmap_guid="ef4cc1b8-828a-4157-a8d0-7fe377c6feae">
-              <button_text>Fit curve length</button_text>
-              <menu_text>Fit curve length</menu_text>
-              <help_text>Fit curve length</help_text>
-              <tooltip>Fit curve length</tooltip>
-              <script>! _FitCrvLength</script>
-            </macro>
-            <macro guid="6d1b7dac-7c23-4a91-b0b6-1e4bd7da2f3d" modified="True" bitmap_guid="4758447b-7f42-4780-b45f-ec506b6c9347">
-              <text>
-                <locale_1033>Handrail</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Handrail"</script>
-            </macro>
-            <macro guid="b2fbcc98-caad-4a8b-bfc7-4633a09175fc" modified="True" bitmap_guid="205c590f-f019-4303-9279-46f65e1ef0a7">
-              <text>
-                <locale_1033>SpaceTruss</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/SpaceTruss"</script>
-            </macro>
-            <macro guid="6b2fe01e-c1d8-4b4f-a475-361186c43dec" modified="True" bitmap_guid="0c40a54f-3e77-4bd8-af34-4f97024932b7">
-              <text>
-                <locale_1033>CrossWalk</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Cross"</script>
-            </macro>
-            <macro guid="56a7f3b4-31dd-4142-95c0-3eb4b859b4cd" modified="True" bitmap_guid="8a0c546c-6f52-4a6c-80fd-5b4d319b7cf6">
-              <text>
-                <locale_1033>Sliding</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Sliding"</script>
-            </macro>
-            <macro guid="b66f1747-c5a8-48d4-a1fd-a7d9ddbecf13" modified="True">
-              <text>
-                <locale_1033>Macro 03</locale_1033>
-              </text>
-              <tooltip>Install</tooltip>
-              <script>! _-RunPythonScript "Elephant/Install"</script>
-            </macro>
-            <macro guid="3a4b157c-769b-4971-a7f3-b68abe9245ff" modified="True" bitmap_guid="109d057f-f29c-4e9f-a9a5-3f1dde5f3f8a">
-              <text>
-                <locale_1033>CurtainWall</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Curtainwall"</script>
             </macro>
             <macro guid="56e10d2c-3ddc-45fd-ba74-580ea05a662d" modified="True" bitmap_guid="5299439a-7dce-488c-8f90-fc534511a471">
               <button_text>Rectangle rounded : End End Diameter</button_text>
@@ -443,56 +356,18 @@ xcZGJyZo1gqxqCpmrRBrdz3cNOqCkNIfcHxrAK0wZuIAAAAASUVORK5CYII=</png>
               <tooltip>Rectangle rounded : End End Diameter</tooltip>
               <script>! _RoundedRectangle</script>
             </macro>
+            <macro guid="163cf917-3e3a-4e51-aec7-66a92ad7dacc" modified="True" bitmap_guid="ef4cc1b8-828a-4157-a8d0-7fe377c6feae">
+              <button_text>Fit curve length</button_text>
+              <menu_text>Fit curve length</menu_text>
+              <help_text>Fit curve length</help_text>
+              <tooltip>Fit curve length</tooltip>
+              <script>! _FitCrvLength</script>
+            </macro>
             <macro guid="6fded175-b2d8-4ff8-8301-1bc2e08c6587" modified="True" bitmap_guid="d687952a-ff80-4b1c-aa89-e7f6d063f5f3">
               <text>
                 <locale_1033>Folding_Door</locale_1033>
               </text>
               <script>! _-RunPythonScript "Elephant/Folding"</script>
-            </macro>
-            <macro guid="77f5dcb4-9366-40ae-9f63-1c460bdedc2f" modified="True" bitmap_guid="0725c59e-2cca-4968-8867-2589160e47b9">
-              <text>
-                <locale_1033>Stair</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Stair"</script>
-            </macro>
-            <macro guid="0e361189-7e48-4454-bd31-6ecbb40980c0" modified="True" bitmap_guid="fa8e07e2-2f82-4516-b43b-fd6530de1e78">
-              <button_text>byRhino home</button_text>
-              <menu_text>byRhino home</menu_text>
-              <help_text>byRhino home</help_text>
-              <tooltip>byRhino home</tooltip>
-              <script>! _byRhinoHome</script>
-            </macro>
-            <macro guid="c3172c0e-4570-4466-bd26-13bc1bca1968" modified="True" bitmap_guid="6817d709-3b0b-4dba-802a-8fba06b63dbd">
-              <text>
-                <locale_1033>Setting</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/CreateAlias"</script>
-            </macro>
-            <macro guid="e561e9ab-e381-4f9a-9c9c-a2a79d2592da" modified="True" bitmap_guid="4d9295ad-b605-4e46-a6a6-4ac042f2b5c2">
-              <text>
-                <locale_1033>Marking</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Arrow"</script>
-            </macro>
-            <macro guid="3dfc34c8-158f-45eb-a5af-ccd62f2aee58" modified="True" bitmap_guid="8d2adcf2-8796-4be7-be95-a2fdcd3cc616">
-              <button_text>Polyline split to crvs</button_text>
-              <menu_text>Polyline split to crvs</menu_text>
-              <help_text>Polyline split to crvs</help_text>
-              <tooltip>Polyline split to crvs</tooltip>
-              <script>! _PolylineSplit2Crvs</script>
-            </macro>
-            <macro guid="955f6f39-a008-4c75-a938-608a6d742583" modified="True" bitmap_guid="edca9b66-9607-428a-88b9-0faf79b4a5cb">
-              <text>
-                <locale_1033>Hbeam</locale_1033>
-              </text>
-              <script>! _-RunPythonScript "Elephant/Hbeam"</script>
-            </macro>
-            <macro guid="50fdaf9d-4297-4c75-a1d6-97e38d954669" modified="True" bitmap_guid="06962038-9554-4443-9cb5-d5fe9f6ac20d">
-              <button_text>Flow Multi</button_text>
-              <menu_text>Flow Multi</menu_text>
-              <help_text>Flow Multi</help_text>
-              <tooltip>Flow Multi</tooltip>
-              <script>! _FlowMulti</script>
             </macro>
             <macro guid="c89adc69-d070-4719-b7ce-35b8a6f1c9fa" modified="True" bitmap_guid="e139187b-8cfe-492e-b968-a39d5b6f0556">
               <button_text>Polyline split to crvs</button_text>
@@ -501,18 +376,68 @@ xcZGJyZo1gqxqCpmrRBrdz3cNOqCkNIfcHxrAK0wZuIAAAAASUVORK5CYII=</png>
               <tooltip>Polyline to crv</tooltip>
               <script>! _PolylineToCrv</script>
             </macro>
-            <macro guid="c513bed3-62f9-4bcf-9e86-1276644529a6" modified="True" bitmap_guid="3cc36ffa-8c79-4dcb-aeae-6dcd4ee20b32">
-              <button_text>Revision clouds by sketch</button_text>
-              <menu_text>Revision clouds by sketch</menu_text>
-              <help_text>Revision clouds by sketch</help_text>
-              <tooltip>Revision clouds by sketch</tooltip>
-              <script>! _RevCloudsBySketch</script>
+            <macro guid="1eae5050-8acf-4424-a7b1-9d8b63d7998a" modified="True" bitmap_guid="58d27b4c-ab58-4f6c-b666-d1a00b14c18f">
+              <button_text>byRhino home</button_text>
+              <menu_text>byRhino home</menu_text>
+              <help_text>byRhino home</help_text>
+              <tooltip>byRhino home</tooltip>
+              <script>! _byRhinoHome</script>
             </macro>
-            <macro guid="9ea85a35-f78c-4867-bdd9-6d160a49772a" modified="True" bitmap_guid="11d1982b-224a-43bc-806a-3abee5cb9a93">
+            <macro guid="50fdaf9d-4297-4c75-a1d6-97e38d954669" modified="True" bitmap_guid="06962038-9554-4443-9cb5-d5fe9f6ac20d">
+              <button_text>Flow Multi</button_text>
+              <menu_text>Flow Multi</menu_text>
+              <help_text>Flow Multi</help_text>
+              <tooltip>Flow Multi</tooltip>
+              <script>! _FlowMulti</script>
+            </macro>
+            <macro guid="0e361189-7e48-4454-bd31-6ecbb40980c0" modified="True" bitmap_guid="fa8e07e2-2f82-4516-b43b-fd6530de1e78">
+              <button_text>byRhino home</button_text>
+              <menu_text>byRhino home</menu_text>
+              <help_text>byRhino home</help_text>
+              <tooltip>byRhino home</tooltip>
+              <script>! _byRhinoHome</script>
+            </macro>
+            <macro guid="6d1b7dac-7c23-4a91-b0b6-1e4bd7da2f3d" modified="True" bitmap_guid="4758447b-7f42-4780-b45f-ec506b6c9347">
               <text>
-                <locale_1033>Lanes</locale_1033>
+                <locale_1033>Handrail</locale_1033>
               </text>
-              <script>! _-RunPythonScript "Elephant/Lane"</script>
+              <script>! _-RunPythonScript "Elephant/Handrail"</script>
+            </macro>
+            <macro guid="77f5dcb4-9366-40ae-9f63-1c460bdedc2f" modified="True" bitmap_guid="0725c59e-2cca-4968-8867-2589160e47b9">
+              <text>
+                <locale_1033>Stair</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Stair"</script>
+            </macro>
+            <macro guid="c3172c0e-4570-4466-bd26-13bc1bca1968" modified="True" bitmap_guid="6817d709-3b0b-4dba-802a-8fba06b63dbd">
+              <text>
+                <locale_1033>Setting</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/CreateAlias"</script>
+            </macro>
+            <macro guid="955f6f39-a008-4c75-a938-608a6d742583" modified="True" bitmap_guid="edca9b66-9607-428a-88b9-0faf79b4a5cb">
+              <text>
+                <locale_1033>Hbeam</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Hbeam"</script>
+            </macro>
+            <macro guid="e561e9ab-e381-4f9a-9c9c-a2a79d2592da" modified="True" bitmap_guid="4d9295ad-b605-4e46-a6a6-4ac042f2b5c2">
+              <text>
+                <locale_1033>Marking</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Arrow"</script>
+            </macro>
+            <macro guid="3a4b157c-769b-4971-a7f3-b68abe9245ff" modified="True" bitmap_guid="109d057f-f29c-4e9f-a9a5-3f1dde5f3f8a">
+              <text>
+                <locale_1033>CurtainWall</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Curtainwall"</script>
+            </macro>
+            <macro guid="634ce896-57fc-4997-a877-73d23ac01ad3" modified="True" bitmap_guid="d7d25fa3-758a-452c-b01d-e6152ce73ddd">
+              <text>
+                <locale_1033>Update</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Update"</script>
             </macro>
             <macro guid="6600a258-4fb6-431d-a8ca-a0d484efab8e" modified="True" bitmap_guid="08952c62-15cc-47e9-b60e-bdc50c911daa">
               <text>
@@ -541,12 +466,102 @@ for i in range(1, N1) : rs.CopyObject(OB1,(rs.VectorScale(V2, i)))
               <tooltip>Add bound layouts</tooltip>
               <script>! _AddLayouts </script>
             </macro>
+            <macro guid="863bcfef-059d-47f8-83e8-1135656b1787" modified="True" bitmap_guid="75053ed1-76fc-4db9-998a-d64ccfa896ba">
+              <text>
+                <locale_1033>SpiralStair</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/SpiralStair"</script>
+            </macro>
+            <macro guid="9ea85a35-f78c-4867-bdd9-6d160a49772a" modified="True" bitmap_guid="11d1982b-224a-43bc-806a-3abee5cb9a93">
+              <text>
+                <locale_1033>Lanes</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Lane"</script>
+            </macro>
+            <macro guid="c513bed3-62f9-4bcf-9e86-1276644529a6" modified="True" bitmap_guid="3cc36ffa-8c79-4dcb-aeae-6dcd4ee20b32">
+              <button_text>Revision clouds by sketch</button_text>
+              <menu_text>Revision clouds by sketch</menu_text>
+              <help_text>Revision clouds by sketch</help_text>
+              <tooltip>Revision clouds by sketch</tooltip>
+              <script>! _RevCloudsBySketch</script>
+            </macro>
+            <macro guid="b66f1747-c5a8-48d4-a1fd-a7d9ddbecf13" modified="True">
+              <text>
+                <locale_1033>Macro 03</locale_1033>
+              </text>
+              <tooltip>Install</tooltip>
+              <script>! _-RunPythonScript "Elephant/Install"</script>
+            </macro>
+            <macro guid="3dfc34c8-158f-45eb-a5af-ccd62f2aee58" modified="True" bitmap_guid="8d2adcf2-8796-4be7-be95-a2fdcd3cc616">
+              <button_text>Polyline split to crvs</button_text>
+              <menu_text>Polyline split to crvs</menu_text>
+              <help_text>Polyline split to crvs</help_text>
+              <tooltip>Polyline split to crvs</tooltip>
+              <script>! _PolylineSplit2Crvs</script>
+            </macro>
+            <macro guid="dcb5bbc0-50ae-43e6-9ee0-ea8010245b03" modified="True">
+              <text>
+                <locale_1033>Macro 04</locale_1033>
+              </text>
+              <tooltip>Tips</tooltip>
+              <script>! _-RunPythonScript "Elephant/ShowShortCuts"</script>
+            </macro>
+            <macro guid="cad4d026-4fd9-4fb8-85a1-8ee30973e341" modified="True" bitmap_guid="5b7d95a2-de1d-42e9-86ad-a7fcccb9b140">
+              <button_text>Full rounded curve</button_text>
+              <menu_text>Full rounded curve</menu_text>
+              <help_text>Full rounded curve</help_text>
+              <tooltip>Full rounded curve</tooltip>
+              <script>! _FullRoundCrv</script>
+            </macro>
+            <macro guid="56a7f3b4-31dd-4142-95c0-3eb4b859b4cd" modified="True" bitmap_guid="8a0c546c-6f52-4a6c-80fd-5b4d319b7cf6">
+              <text>
+                <locale_1033>Sliding</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Sliding"</script>
+            </macro>
+            <macro guid="1a435a1e-77bd-4925-8260-1e55e30a331e" modified="True" bitmap_guid="a5938388-c105-442e-afa6-124043b7357d">
+              <text>
+                <locale_1033>Tree</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/ArrayTree"</script>
+            </macro>
+            <macro guid="6b2fe01e-c1d8-4b4f-a475-361186c43dec" modified="True" bitmap_guid="0c40a54f-3e77-4bd8-af34-4f97024932b7">
+              <text>
+                <locale_1033>CrossWalk</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Cross"</script>
+            </macro>
+            <macro guid="da2237cf-586a-4a15-b262-4067df58fef1" modified="True" bitmap_guid="a997b006-02c7-4aa5-a0e0-4cb2200db378">
+              <text>
+                <locale_1033>Spinning_Door</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Spinning"</script>
+            </macro>
+            <macro guid="e74dc83f-d34b-4c62-a009-179d0d4576ad" modified="True" bitmap_guid="27fb023b-2b4f-408d-b25d-93e233591c69">
+              <button_text>Rebuild curve control point by length</button_text>
+              <menu_text>Rebuild curve control point by length</menu_text>
+              <help_text>Rebuild curve control point by length</help_text>
+              <tooltip>Rebuild curve control point by length</tooltip>
+              <script>! _RebuildCrvCountByLength</script>
+            </macro>
             <macro guid="c27f1600-83e2-4f3c-b8d2-03fdb5a8474b" modified="True" bitmap_guid="1b64c55d-d800-4408-ac96-a91430219b28">
               <button_text>Cast vector shadow</button_text>
               <menu_text>Cast vector shadow</menu_text>
               <help_text>Cast vector shadow</help_text>
               <tooltip>Cast vector shadow</tooltip>
               <script>! _CastVectorShadow</script>
+            </macro>
+            <macro guid="b2fbcc98-caad-4a8b-bfc7-4633a09175fc" modified="True" bitmap_guid="205c590f-f019-4303-9279-46f65e1ef0a7">
+              <text>
+                <locale_1033>SpaceTruss</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/SpaceTruss"</script>
+            </macro>
+            <macro guid="94c2a9a2-cd8d-4a70-b82f-4921ca41d833" modified="True" bitmap_guid="bb3f33e7-ae0a-4ef5-9cda-3c721838ab6d">
+              <text>
+                <locale_1033>Swing_Door</locale_1033>
+              </text>
+              <script>! _-RunPythonScript "Elephant/Swing"</script>
             </macro>
           </macros>
         </RhinoUI>

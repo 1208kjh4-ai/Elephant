@@ -19,6 +19,7 @@ def main():
         " Stair     : 계단 생성",
         " SpiralStair: 나선계단 생성",
         " Handrail  : 난간 생성",
+        " Truss      : 트러스 생성",
         " SpaceTruss: 공간 트러스 생성",
         " 3DTruss   : 3차원 트러스 생성",
         " Hbeam     : H형강 생성",

@@ -7,193 +7,311 @@ import Eto.Drawing as drawing
 import math
 import rhinoscriptsyntax as rs
 import System
+import os
 
 # -------------------------------------------------------------------------
-# 1. 기하학 엔진: 직육면체(Brep)에서 OBB(회전된 바운딩 박스) 추출
+# 1. 기하학 엔진: 직육면체(Brep)에서 중심과 3축 길이(OBB) 완벽 추출
 # -------------------------------------------------------------------------
-def get_obb_from_box(brep):
-    """직육면체에서 기준 평면(Plane)과 3축 길이(Extrusion, X, Y)를 추출합니다."""
-    # 만약 정육면체/직육면체(6면)가 아닐 경우 월드 좌표 바운딩 박스로 임시 대체
+def get_obb_data(brep):
     faces = list(brep.Faces)
     if len(faces) != 6:
         bbox = brep.GetBoundingBox(True)
-        return rg.Plane.WorldXY, bbox.Max.Z - bbox.Min.Z, bbox.Max.X - bbox.Min.X, bbox.Max.Y - bbox.Min.Y
+        center = bbox.Center
+        return center, [
+            (rg.Vector3d.XAxis, bbox.Max.X - bbox.Min.X),
+            (rg.Vector3d.YAxis, bbox.Max.Y - bbox.Min.Y),
+            (rg.Vector3d.ZAxis, bbox.Max.Z - bbox.Min.Z)
+        ]
 
-    # [에러 수정된 부분] 꼭짓점(Vertex)에서 연결된 엣지의 "인덱스"를 먼저 찾은 후 객체로 변환합니다.
     v = brep.Vertices[0]
     edge_indices = v.EdgeIndices()
     edges = [brep.Edges[idx] for idx in edge_indices]
 
     if len(edges) != 3:
         bbox = brep.GetBoundingBox(True)
-        return rg.Plane.WorldXY, bbox.Max.Z - bbox.Min.Z, bbox.Max.X - bbox.Min.X, bbox.Max.Y - bbox.Min.Y
+        center = bbox.Center
+        return center, [
+            (rg.Vector3d.XAxis, bbox.Max.X - bbox.Min.X),
+            (rg.Vector3d.YAxis, bbox.Max.Y - bbox.Min.Y),
+            (rg.Vector3d.ZAxis, bbox.Max.Z - bbox.Min.Z)
+        ]
 
     v_pt = v.Location
-    e_data = []
+    axes = []
     for e in edges:
         crv = e.ToNurbsCurve()
         length = crv.GetLength()
-        # 점의 위치에 따라 벡터 방향 보정
         if crv.PointAtStart.DistanceTo(v_pt) < 0.001:
             vec = crv.TangentAtStart
         else:
             vec = -crv.TangentAtEnd
-        e_data.append((length, vec))
+        vec.Unitize()
+        axes.append((vec, length))
 
-    # 가장 긴 길이를 압출 방향(Z축)으로 설정하기 위해 정렬
-    e_data.sort(key=lambda x: x[0], reverse=True)
-    long_len, long_vec = e_data[0]
-    dim_x, vec_x = e_data[1]
-    dim_y, vec_y = e_data[2]
-
-    # 중심점 계산
     amp = rg.AreaMassProperties.Compute(brep)
     center = amp.Centroid if amp else brep.GetBoundingBox(True).Center
 
-    # 프로파일이 그려질 평면(Plane) 생성
-    plane = rg.Plane(center, vec_x, vec_y)
-    # 평면의 Z축이 가장 긴 벡터(long_vec)와 일치하도록 방향 조정
-    if plane.ZAxis * long_vec < 0:
-        plane = rg.Plane(center, vec_y, vec_x)
-        dim_x, dim_y = dim_y, dim_x
-
-    return plane, long_len, dim_x, dim_y
+    return center, axes
 
 # -------------------------------------------------------------------------
-# 2. 기하학 엔진: 단면 커브 생성 및 솔리드 압출
+# 2. 기하학 엔진: 3차원 평면 회전, r값 연산 및 솔리드 압출
 # -------------------------------------------------------------------------
-def generate_steel_member(brep, p_type, t1, t2, flip_x, flip_y, angle):
-    # 1. 박스에서 방향과 치수 추출
-    plane, length, dim_x, dim_y = get_obb_from_box(brep)
+def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=None):
+    center, axes = get_obb_data(brep)
     
-    # 2. 각도(0, 90, 180, 270)에 따라 H(높이)와 B(폭) 매칭
-    # 90도 돌아가면 박스의 가로/세로 매칭이 바뀜
-    if angle % 180 == 0:
-        B, H = dim_x, dim_y
-    else:
-        B, H = dim_y, dim_x
+    axes.sort(key=lambda x: x[1], reverse=True)
+    vec_z, len_z = axes[0]
+    vec_x, len_x = axes[1]
+    vec_y, len_y = axes[2]
+    
+    plane = rg.Plane(center, vec_x, vec_y)
+    if plane.ZAxis * vec_z < 0:
+        plane = rg.Plane(center, vec_y, vec_x)
+        
+    gizmo_plane = rg.Plane(plane)
+        
+    if ax != 0: plane.Rotate(math.radians(ax), gizmo_plane.XAxis, center)
+    if ay != 0: plane.Rotate(math.radians(ay), gizmo_plane.YAxis, center)
+    if az != 0: plane.Rotate(math.radians(az), gizmo_plane.ZAxis, center)
+    
+    B = H = L = 0.0
+    for vec, length in axes:
+        if abs(vec * plane.XAxis) > 0.9: B = length
+        elif abs(vec * plane.YAxis) > 0.9: H = length
+        elif abs(vec * plane.ZAxis) > 0.9: L = length
+        
+    if custom_length is not None:
+        L = custom_length
 
-    # 기하학 오류 방지: 두께가 폭/높이보다 크지 않게 제한
-    t1 = min(t1, B * 0.9)
-    t2 = min(t2, H * 0.45)
-
+    if B < 0.001 or H < 0.001 or L < 0.001: return None, None, None
+    
+    t1_val = min(t1, B * 0.9)
+    t2_val = min(t2, H * 0.45)
+    
+    # ---------------------------------------------------------------------
+    # r값이 형태를 파고들지 않도록 안전 한계선(Clamp) 자동 계산
+    # ---------------------------------------------------------------------
+    max_r = 0
+    if p_type == "H형강 (H-Beam)":
+        max_r = min((H - 2*t2_val)/2.0, (B - t1_val)/2.0)
+    elif p_type == "ㄷ형강 (C-Channel)":
+        max_r = min((H - 2*t2_val)/2.0, B - t1_val)
+    elif p_type == "L형강 (L-Plate)":
+        max_r = min(H - t2_val, B - t1_val)
+    elif p_type == "T형강 (T-Beam)":
+        max_r = min(H - t2_val, (B - t1_val)/2.0)
+        
+    # 버그를 막기 위해 최대 허용치의 98%까지만 허용
+    r_val = min(r, max_r * 0.98) 
+    if r_val < 0: r_val = 0
+    
+    # ---------------------------------------------------------------------
+    # 모든 프로파일은 완벽한 반시계 방향(CCW)으로 좌표점 구성
+    # ---------------------------------------------------------------------
     pts = []
-    # 단면 2D 점 좌표 생성 (중심 0,0 기준)
     if p_type == "H형강 (H-Beam)":
         pts = [
             rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
-            rg.Point3d(B/2, -H/2 + t2, 0), rg.Point3d(t1/2, -H/2 + t2, 0),
-            rg.Point3d(t1/2, H/2 - t2, 0), rg.Point3d(B/2, H/2 - t2, 0),
+            rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(t1_val/2, -H/2 + t2_val, 0),
+            rg.Point3d(t1_val/2, H/2 - t2_val, 0), rg.Point3d(B/2, H/2 - t2_val, 0),
             rg.Point3d(B/2, H/2, 0), rg.Point3d(-B/2, H/2, 0),
-            rg.Point3d(-B/2, H/2 - t2, 0), rg.Point3d(-t1/2, H/2 - t2, 0),
-            rg.Point3d(-t1/2, -H/2 + t2, 0), rg.Point3d(-B/2, -H/2 + t2, 0),
+            rg.Point3d(-B/2, H/2 - t2_val, 0), rg.Point3d(-t1_val/2, H/2 - t2_val, 0),
+            rg.Point3d(-t1_val/2, -H/2 + t2_val, 0), rg.Point3d(-B/2, -H/2 + t2_val, 0),
             rg.Point3d(-B/2, -H/2, 0)
         ]
     elif p_type == "ㄷ형강 (C-Channel)":
         pts = [
             rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
-            rg.Point3d(B/2, -H/2 + t2, 0), rg.Point3d(-B/2 + t1, -H/2 + t2, 0),
-            rg.Point3d(-B/2 + t1, H/2 - t2, 0), rg.Point3d(B/2, H/2 - t2, 0),
+            rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(-B/2 + t1_val, -H/2 + t2_val, 0),
+            rg.Point3d(-B/2 + t1_val, H/2 - t2_val, 0), rg.Point3d(B/2, H/2 - t2_val, 0),
             rg.Point3d(B/2, H/2, 0), rg.Point3d(-B/2, H/2, 0),
             rg.Point3d(-B/2, -H/2, 0)
         ]
     elif p_type == "L형강 (L-Plate)":
         pts = [
             rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
-            rg.Point3d(B/2, -H/2 + t2, 0), rg.Point3d(-B/2 + t1, -H/2 + t2, 0),
-            rg.Point3d(-B/2 + t1, H/2, 0), rg.Point3d(-B/2, H/2, 0),
+            rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(-B/2 + t1_val, -H/2 + t2_val, 0),
+            rg.Point3d(-B/2 + t1_val, H/2, 0), rg.Point3d(-B/2, H/2, 0),
             rg.Point3d(-B/2, -H/2, 0)
         ]
+    elif p_type == "T형강 (T-Beam)":
+        # T형강도 외적 연산을 위해 완벽한 CCW 순서로 재정렬
+        pts = [
+            rg.Point3d(-t1_val/2, -H/2, 0), rg.Point3d(t1_val/2, -H/2, 0),
+            rg.Point3d(t1_val/2, H/2 - t2_val, 0), rg.Point3d(B/2, H/2 - t2_val, 0),
+            rg.Point3d(B/2, H/2, 0), rg.Point3d(-B/2, H/2, 0),
+            rg.Point3d(-B/2, H/2 - t2_val, 0), rg.Point3d(-t1_val/2, H/2 - t2_val, 0),
+            rg.Point3d(-t1_val/2, -H/2, 0)
+        ]
 
-    # 3. Flip 적용 (X축, Y축 반전)
-    if flip_x:
-        for p in pts: p.X = -p.X
-    if flip_y:
-        for p in pts: p.Y = -p.Y
-
-    # 4. Rotation 90도 단위 회전 적용
-    rad = math.radians(angle)
-    for p in pts:
-        nx = p.X * math.cos(rad) - p.Y * math.sin(rad)
-        ny = p.X * math.sin(rad) + p.Y * math.cos(rad)
-        p.X, p.Y = nx, ny
-
-    # 5. 3D 평면으로 변환
     curve_pts = [plane.PointAt(p.X, p.Y, 0) for p in pts]
-    polyline = rg.Polyline(curve_pts)
-    curve = polyline.ToNurbsCurve()
+    
+    # ---------------------------------------------------------------------
+    # [핵심] 지능형 안쪽 모서리(Inner Corner) 추적 및 Arc 삽입 엔진
+    # ---------------------------------------------------------------------
+    if r_val <= 0.001:
+        # r값이 없으면 기존처럼 직선형 프로파일 생성
+        curve = rg.Polyline(curve_pts).ToNurbsCurve()
+    else:
+        corners = []
+        n = len(curve_pts) - 1
+        
+        for i in range(n):
+            p_curr = curve_pts[i]
+            p_prev = curve_pts[i-1]
+            p_next = curve_pts[(i+1)%n]
+            
+            v_in = p_curr - p_prev
+            v_out = p_next - p_curr
+            v_in.Unitize()
+            v_out.Unitize()
+            
+            # 벡터 외적을 통해 안쪽 코너 판별 (진행 방향 대비 우회전하는 곳)
+            cross_vec = rg.Vector3d.CrossProduct(v_in, v_out)
+            z_dot = cross_vec * plane.ZAxis
+            
+            if z_dot < -0.5: # 안쪽 모서리(Inner Corner) 감지됨!
+                p_start = p_curr - v_in * r_val
+                p_end = p_curr + v_out * r_val
+                arc = rg.Arc(p_start, v_in, p_end)
+                corners.append({'type': 'fillet', 'p_start': p_start, 'p_end': p_end, 'arc': arc})
+            else: # 바깥쪽 모서리는 직각(Sharp) 유지
+                corners.append({'type': 'sharp', 'p_start': p_curr, 'p_end': p_curr})
+                
+        polycurve = rg.PolyCurve()
+        for i in range(n):
+            c_curr = corners[i]
+            c_next = corners[(i+1)%n]
+            
+            if c_curr['type'] == 'fillet':
+                polycurve.Append(c_curr['arc'])
+                
+            line = rg.Line(c_curr['p_end'], c_next['p_start'])
+            if line.Length > 0.001:
+                polycurve.Append(line)
+                
+        if not polycurve.IsClosed:
+            polycurve.MakeClosed(0.001)
+            
+        curve = polycurve.ToNurbsCurve()
+    # ---------------------------------------------------------------------
 
-    # 6. 박스 전체 길이만큼 압출 (중앙 기준이므로 -Z 방향으로 절반 이동 후 압출)
-    curve.Translate(-plane.ZAxis * (length / 2))
-    srf = rg.Surface.CreateExtrusion(curve, plane.ZAxis * length)
+    curve.Translate(-plane.ZAxis * (L / 2))
+    srf = rg.Surface.CreateExtrusion(curve, plane.ZAxis * L)
+    
     if srf:
         brep_ext = srf.ToBrep()
         cap = brep_ext.CapPlanarHoles(sc.doc.ModelAbsoluteTolerance)
-        return cap if cap else brep_ext
-    return None
+        final_brep = cap if cap else brep_ext
+        return final_brep, gizmo_plane, max(B, H) 
+    return None, None, None
 
 # -------------------------------------------------------------------------
-# 3. 프리뷰 컨두잇 (실시간 시각화)
+# 3. 프리뷰 컨두잇 (철골 부재 + 직관적인 3D 축 기즈모 렌더링)
 # -------------------------------------------------------------------------
 class SteelPreviewConduit(Rhino.Display.DisplayConduit):
     def __init__(self):
         self.breps = []
-        self.color = System.Drawing.Color.FromArgb(180, 100, 150, 200) # 철골 느낌의 푸른 회색
+        self.gizmo_breps = [] 
+        self.gizmo_texts = [] 
+        
+        self.color = System.Drawing.Color.FromArgb(180, 100, 150, 200)
         self.material = Rhino.Display.DisplayMaterial(self.color)
+        
+        self.mat_x = Rhino.Display.DisplayMaterial(System.Drawing.Color.Red)
+        self.mat_y = Rhino.Display.DisplayMaterial(System.Drawing.Color.LimeGreen)
+        self.mat_z = Rhino.Display.DisplayMaterial(System.Drawing.Color.DodgerBlue)
+        self.mat_w = Rhino.Display.DisplayMaterial(System.Drawing.Color.White)
         
     def CalculateBoundingBox(self, e):
         for b in self.breps:
             e.IncludeBoundingBox(b.GetBoundingBox(False))
+        for gb, _ in self.gizmo_breps:
+            e.IncludeBoundingBox(gb.GetBoundingBox(False))
             
     def DrawForeground(self, e):
         for b in self.breps:
             e.Display.DrawBrepShaded(b, self.material)
             e.Display.DrawBrepWires(b, System.Drawing.Color.Black, 1)
 
+        try: e.Display.DepthTestingEnabled = False
+        except: pass
+
+        for gb, mat in self.gizmo_breps:
+            e.Display.DrawBrepShaded(gb, mat)
+            
+        for txt, color, pt in self.gizmo_texts:
+            e.Display.Draw2dText(txt, color, pt, True, 24) 
+            
+        try: e.Display.DepthTestingEnabled = True
+        except: pass
+
 # -------------------------------------------------------------------------
 # 4. UI 및 컨트롤러 (Eto.Forms)
 # -------------------------------------------------------------------------
 class SteelConverterDialog(forms.Form):
     def __init__(self):
-        # [수정 1] 인자 없이 부모 클래스(.NET)를 아주 깨끗하게 먼저 초기화합니다.
         forms.Form.__init__(self) 
         
-        self.Title = "철골 부재 자동 변환기"
-        self.ClientSize = drawing.Size(350, 320)
+        self.Title = "철골 부재 3축 변환기"
+        self.ClientSize = drawing.Size(350, 520) 
         self.Padding = drawing.Padding(10)
         self.Resizable = False
+        self.Topmost = True
         
-        # 빈 값으로 초기 세팅
+        try:
+            self.script_dir = os.path.dirname(os.path.realpath(__file__))
+        except NameError:
+            self.script_dir = None
+        
+        self.gizmo_radius_factor = 0.04
+        self.gizmo_height_factor = 1.0   
+        self.gizmo_text_offset = 1.2     
+        self.gizmo_min_size = 100        
+        self.gizmo_max_size = 2000       
+        
         self.original_breps = []
         self.original_ids = []
-        self.current_angle = 0
+        
+        self.angle_x = 0
+        self.angle_y = 0
+        self.angle_z = 0
+        self.custom_length = None 
         
         self.conduit = SteelPreviewConduit()
-        self.conduit.Enabled = False # 프리뷰는 잠시 꺼둡니다.
+        self.conduit.Enabled = False
         
-    # [수정 2] 데이터를 안전하게 팝업창 안으로 밀어넣고 UI를 켜는 전용 함수 추가
     def SetupData(self, original_breps, original_ids):
         self.original_breps = original_breps
         self.original_ids = original_ids
         
         self.CreateUI()
-        self.LoadSticky() # 이전 설정값 불러오기
+        self.LoadSticky()
         
-        self.conduit.Enabled = True # 데이터가 들어왔으니 프리뷰 가동
+        _, axes = get_obb_data(self.original_breps[0])
+        init_L = max([length for vec, length in axes])
+        self.lbl_length.Text = "인식된 길이: {:.1f} mm".format(init_L)
+        
+        self.conduit.Enabled = True
         self.UpdatePreview()
         
     def CreateUI(self):
         layout = forms.DynamicLayout()
         layout.Spacing = drawing.Size(5, 5)
 
-        # 프로파일 타입
         self.dd_profile = forms.DropDown()
-        self.dd_profile.DataStore = ["H형강 (H-Beam)", "ㄷ형강 (C-Channel)", "L형강 (L-Plate)"]
+        self.dd_profile.DataStore = ["H형강 (H-Beam)", "ㄷ형강 (C-Channel)", "L형강 (L-Plate)", "T형강 (T-Beam)"]
         self.dd_profile.SelectedIndex = 0
         self.dd_profile.SelectedIndexChanged += self.OnUIChange
         layout.AddRow("부재 프로파일:", self.dd_profile)
         
-        # 두께 설정
+        self.image_view = forms.ImageView()
+        self.image_view.Size = drawing.Size(120, 120) 
+        
+        img_layout = forms.DynamicLayout()
+        img_layout.AddRow(None, self.image_view, None) 
+        layout.AddRow(img_layout)
+        
         self.num_t1 = forms.NumericStepper(Value=6.5, DecimalPlaces=1, Increment=0.5)
         self.num_t1.ValueChanged += self.OnUIChange
         layout.AddRow("Web 두께 (t1):", self.num_t1)
@@ -202,24 +320,39 @@ class SteelConverterDialog(forms.Form):
         self.num_t2.ValueChanged += self.OnUIChange
         layout.AddRow("Flange 두께 (t2):", self.num_t2)
         
-        # [수정된 부분] AddSeparator()를 삭제하고 빈 행으로 여백(여유 공간)을 생성합니다.
-        layout.AddRow(None)
-        
-        # 방향 제어
-        self.lbl_angle = forms.Label(Text="현재 회전각: 0도")
-        self.btn_rotate = forms.Button(Text="🔄 90도 회전하기")
-        self.btn_rotate.Click += self.OnRotateClick
-        layout.AddRow(self.lbl_angle, self.btn_rotate)
-        
-        self.chk_flip_x = forms.CheckBox(Text="X축 뒤집기 (Flip X)")
-        self.chk_flip_x.CheckedChanged += self.OnUIChange
-        self.chk_flip_y = forms.CheckBox(Text="Y축 뒤집기 (Flip Y)")
-        self.chk_flip_y.CheckedChanged += self.OnUIChange
-        layout.AddRow(self.chk_flip_x, self.chk_flip_y)
+        # --- r값 컨트롤러 추가 ---
+        self.num_r = forms.NumericStepper(Value=13.0, DecimalPlaces=1, Increment=1.0)
+        self.num_r.ValueChanged += self.OnUIChange
+        layout.AddRow("Fillet 반경 (r):", self.num_r)
         
         layout.AddRow(None)
         
-        # 버튼
+        layout.AddRow(forms.Label(Text="📏 압출 길이 보정:"))
+        self.lbl_length = forms.Label(Text="인식된 길이: 계산 대기중...")
+        btn_reset_len = forms.Button(Text="길이 재설정 (2점 클릭)")
+        btn_reset_len.Click += self.OnResetLengthClick
+        layout.AddRow(self.lbl_length, btn_reset_len)
+
+        layout.AddRow(None)
+        
+        layout.AddRow(forms.Label(Text="📐 방향 제어 (축별 회전):"))
+        btn_rot_x = forms.Button(Text="🔄 X축 (Red) 회전")
+        btn_rot_x.Click += self.OnRotX
+        self.lbl_rot_x = forms.Label(Text="0도")
+        layout.AddRow(btn_rot_x, self.lbl_rot_x)
+        
+        btn_rot_y = forms.Button(Text="🔄 Y축 (Green) 회전")
+        btn_rot_y.Click += self.OnRotY
+        self.lbl_rot_y = forms.Label(Text="0도")
+        layout.AddRow(btn_rot_y, self.lbl_rot_y)
+        
+        btn_rot_z = forms.Button(Text="🔄 Z축 (Blue) 회전")
+        btn_rot_z.Click += self.OnRotZ
+        self.lbl_rot_z = forms.Label(Text="0도")
+        layout.AddRow(btn_rot_z, self.lbl_rot_z)
+        
+        layout.AddRow(None)
+        
         self.btn_ok = forms.Button(Text="생성 및 원본 교체")
         self.btn_ok.Click += self.OnOKClick
         self.btn_cancel = forms.Button(Text="취소")
@@ -231,60 +364,138 @@ class SteelConverterDialog(forms.Form):
         
         self.Content = layout
 
+    def UpdateProfileImage(self):
+        if not self.script_dir: return 
+        
+        file_map = {
+            "H형강 (H-Beam)": "H-Beam.png",
+            "ㄷ형강 (C-Channel)": "C-Channel.png",
+            "L형강 (L-Plate)": "L-Plate.png",
+            "T형강 (T-Beam)": "T-Beam.png"
+        }
+        
+        sel_val = self.dd_profile.SelectedValue
+        file_name = file_map.get(sel_val, "")
+        img_path = os.path.join(self.script_dir, "icons", file_name)
+        
+        if os.path.exists(img_path):
+            try:
+                self.image_view.Image = drawing.Bitmap(img_path)
+            except Exception as e:
+                print("이미지 렌더링 오류:", e)
+        else:
+            self.image_view.Image = None 
+
+    def OnResetLengthClick(self, sender, e):
+        self.Visible = False
+        try:
+            pt1 = rs.GetPoint("압출할 길이의 '시작점'을 클릭하세요.")
+            if pt1:
+                pt2 = rs.GetPoint("압출할 길이의 '끝점'을 클릭하세요.", pt1)
+                if pt2:
+                    dist = pt1.DistanceTo(pt2)
+                    self.custom_length = dist 
+                    self.lbl_length.Text = "수동 지정: {:.1f} mm".format(dist)
+        except Exception as ex:
+            print(ex)
+        finally:
+            self.Visible = True
+            self.UpdatePreview()
+
     def LoadSticky(self):
         if "Steel_Type" in sc.sticky: self.dd_profile.SelectedIndex = sc.sticky["Steel_Type"]
         if "Steel_t1" in sc.sticky: self.num_t1.Value = sc.sticky["Steel_t1"]
         if "Steel_t2" in sc.sticky: self.num_t2.Value = sc.sticky["Steel_t2"]
-        if "Steel_FlipX" in sc.sticky: self.chk_flip_x.Checked = sc.sticky["Steel_FlipX"]
-        if "Steel_FlipY" in sc.sticky: self.chk_flip_y.Checked = sc.sticky["Steel_FlipY"]
-        if "Steel_Angle" in sc.sticky: 
-            self.current_angle = sc.sticky["Steel_Angle"]
-            self.lbl_angle.Text = "현재 회전각: {}도".format(self.current_angle)
+        if "Steel_r" in sc.sticky: self.num_r.Value = sc.sticky["Steel_r"] # r값 불러오기
+        if "Steel_RotX" in sc.sticky: 
+            self.angle_x = sc.sticky["Steel_RotX"]
+            self.lbl_rot_x.Text = "{}도".format(self.angle_x)
+        if "Steel_RotY" in sc.sticky: 
+            self.angle_y = sc.sticky["Steel_RotY"]
+            self.lbl_rot_y.Text = "{}도".format(self.angle_y)
+        if "Steel_RotZ" in sc.sticky: 
+            self.angle_z = sc.sticky["Steel_RotZ"]
+            self.lbl_rot_z.Text = "{}도".format(self.angle_z)
 
     def SaveSticky(self):
         sc.sticky["Steel_Type"] = self.dd_profile.SelectedIndex
         sc.sticky["Steel_t1"] = self.num_t1.Value
         sc.sticky["Steel_t2"] = self.num_t2.Value
-        sc.sticky["Steel_FlipX"] = self.chk_flip_x.Checked
-        sc.sticky["Steel_FlipY"] = self.chk_flip_y.Checked
-        sc.sticky["Steel_Angle"] = self.current_angle
+        sc.sticky["Steel_r"] = self.num_r.Value # r값 저장
+        sc.sticky["Steel_RotX"] = self.angle_x
+        sc.sticky["Steel_RotY"] = self.angle_y
+        sc.sticky["Steel_RotZ"] = self.angle_z
 
     def OnUIChange(self, sender, e):
         self.UpdatePreview()
 
-    def OnRotateClick(self, sender, e):
-        self.current_angle = (self.current_angle + 90) % 360
-        self.lbl_angle.Text = "현재 회전각: {}도".format(self.current_angle)
+    def OnRotX(self, sender, e):
+        self.angle_x = (self.angle_x + 90) % 360
+        self.lbl_rot_x.Text = "{}도".format(self.angle_x)
+        self.UpdatePreview()
+        
+    def OnRotY(self, sender, e):
+        self.angle_y = (self.angle_y + 90) % 360
+        self.lbl_rot_y.Text = "{}도".format(self.angle_y)
+        self.UpdatePreview()
+        
+    def OnRotZ(self, sender, e):
+        self.angle_z = (self.angle_z + 90) % 360
+        self.lbl_rot_z.Text = "{}도".format(self.angle_z)
         self.UpdatePreview()
 
     def UpdatePreview(self):
+        self.UpdateProfileImage() 
+        
         p_type = self.dd_profile.SelectedValue
         t1 = self.num_t1.Value
         t2 = self.num_t2.Value
-        flip_x = self.chk_flip_x.Checked
-        flip_y = self.chk_flip_y.Checked
-        angle = self.current_angle
+        r = self.num_r.Value # 뷰포트 업데이트 시 r값 전달
         
         self.conduit.breps = []
+        self.conduit.gizmo_breps = []
+        self.conduit.gizmo_texts = []
+        
         for b in self.original_breps:
-            steel_brep = generate_steel_member(b, p_type, t1, t2, flip_x, flip_y, angle)
-            if steel_brep:
+            result = generate_steel_member(b, p_type, t1, t2, r, self.angle_x, self.angle_y, self.angle_z, self.custom_length)
+            
+            if result and result[0]:
+                steel_brep, gizmo_plane, max_dim = result
                 self.conduit.breps.append(steel_brep)
                 
+                size = max_dim * 1.5
+                if size < self.gizmo_min_size: size = self.gizmo_min_size
+                elif size > self.gizmo_max_size: size = self.gizmo_max_size 
+                
+                radius = size * self.gizmo_radius_factor   
+                cyl_h = size * self.gizmo_height_factor     
+                
+                sphere = rg.Sphere(gizmo_plane.Origin, radius * 2.0).ToBrep()
+                if sphere: self.conduit.gizmo_breps.append((sphere, self.conduit.mat_w))
+                
+                axes_info = [
+                    (gizmo_plane.XAxis, self.conduit.mat_x, System.Drawing.Color.Red, "X"),
+                    (gizmo_plane.YAxis, self.conduit.mat_y, System.Drawing.Color.LimeGreen, "Y"),
+                    (gizmo_plane.ZAxis, self.conduit.mat_z, System.Drawing.Color.DodgerBlue, "Z")
+                ]
+                
+                for vec, mat, color, text in axes_info:
+                    cyl_plane = rg.Plane(gizmo_plane.Origin, vec)
+                    cyl = rg.Cylinder(rg.Circle(cyl_plane, radius), cyl_h).ToBrep(True, True)
+                    if cyl: self.conduit.gizmo_breps.append((cyl, mat))
+                    
+                    text_pt = gizmo_plane.Origin + vec * (size * self.gizmo_text_offset)
+                    self.conduit.gizmo_texts.append((text, color, text_pt))
+                    
         sc.doc.Views.Redraw()
 
     def OnOKClick(self, sender, e):
-        self.SaveSticky() # 설정값 저장
+        self.SaveSticky()
         self.conduit.Enabled = False
-        
-        # 1. 새 철골 부재 Bake
         for b in self.conduit.breps:
             sc.doc.Objects.AddBrep(b)
-            
-        # 2. 원본 가매스(Box) 삭제
         for bid in self.original_ids:
             sc.doc.Objects.Delete(bid, True)
-            
         sc.doc.Views.Redraw()
         self.Close()
 
@@ -299,22 +510,39 @@ class SteelConverterDialog(forms.Form):
         super(SteelConverterDialog, self).OnClosed(e)
 
 # -------------------------------------------------------------------------
-# 5. 실행 함수 (이 부분을 아래 코드로 교체하세요)
+# 5. 실행 함수
 # -------------------------------------------------------------------------
 def main():
-    # 1. 사용자에게 직육면체 다중 선택 받기
-    obj_ids = rs.GetObjects("철골 부재로 변환할 직육면체(가매스)들을 모두 선택하세요.", rs.filter.polysurface)
-    if not obj_ids: return
+    go = Rhino.Input.Custom.GetOption()
+    go.SetCommandPrompt("철골 부재를 생성할 기준을 선택하세요")
+    op_select = go.AddOption("SelectExisting")
+    op_draw = go.AddOption("Draw3PointBox")
+    
+    get_rc = go.Get()
+    
+    if get_rc != Rhino.Input.GetResult.Option:
+        return
+        
+    obj_ids = []
+    
+    if go.Option().EnglishName == "SelectExisting":
+        obj_ids = rs.GetObjects("철골 부재로 변환할 직육면체들을 모두 선택하세요.", rs.filter.polysurface)
+        if not obj_ids: return
+        
+    elif go.Option().EnglishName == "Draw3PointBox":
+        rs.Command("-_Box _3Point Pause Pause Pause Pause")
+        new_objs = rs.LastCreatedObjects()
+        if new_objs:
+            obj_ids = new_objs
+        else:
+            print("박스 생성이 취소되었거나 실패했습니다.")
+            return
 
     breps = [rs.coercebrep(id) for id in obj_ids]
+    if not breps: return
     
-    # 2. 다이얼로그 실행 [수정됨]
-    # ShowModal() 대신 윈도우 인스턴스를 직접 보여주는 방식으로 변경합니다.
     dialog = SteelConverterDialog()
     dialog.SetupData(breps, obj_ids)
-    
-    # Show()를 사용하면 환경 설정에 상관없이 무조건 팝업이 출력됩니다.
-    dialog.Topmost = True  # 항상 위에 표시
     dialog.Show()
 
 if __name__ == "__main__":

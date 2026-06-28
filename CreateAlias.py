@@ -21,6 +21,7 @@ SHORTCUT_SETTINGS = {
     "SpaceTruss": '! _-RunPythonScript "Elephant/SpaceTruss"',
     "3DTruss": '! _-RunPythonScript "Elephant/3DTruss"',
     "Hbeam": '! _-RunPythonScript "Elephant/Hbeam"',
+    "Truss": '! _-RunPythonScript "Elephant/Truss"'
 }
 
 # ==============================================================================
