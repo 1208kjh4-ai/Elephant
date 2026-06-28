@@ -92,13 +92,13 @@ def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=Non
     # r값이 형태를 파고들지 않도록 안전 한계선(Clamp) 자동 계산
     # ---------------------------------------------------------------------
     max_r = 0
-    if p_type == "H형강 (H-Beam)":
+    if p_type == "H-Beam":
         max_r = min((H - 2*t2_val)/2.0, (B - t1_val)/2.0)
-    elif p_type == "ㄷ형강 (C-Channel)":
+    elif p_type == "C-Channel":
         max_r = min((H - 2*t2_val)/2.0, B - t1_val)
-    elif p_type == "L형강 (L-Plate)":
+    elif p_type == "L-Plate":
         max_r = min(H - t2_val, B - t1_val)
-    elif p_type == "T형강 (T-Beam)":
+    elif p_type == "T-Beam":
         max_r = min(H - t2_val, (B - t1_val)/2.0)
         
     # 버그를 막기 위해 최대 허용치의 98%까지만 허용
@@ -109,7 +109,7 @@ def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=Non
     # 모든 프로파일은 완벽한 반시계 방향(CCW)으로 좌표점 구성
     # ---------------------------------------------------------------------
     pts = []
-    if p_type == "H형강 (H-Beam)":
+    if p_type == "H-Beam":
         pts = [
             rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
             rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(t1_val/2, -H/2 + t2_val, 0),
@@ -119,7 +119,7 @@ def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=Non
             rg.Point3d(-t1_val/2, -H/2 + t2_val, 0), rg.Point3d(-B/2, -H/2 + t2_val, 0),
             rg.Point3d(-B/2, -H/2, 0)
         ]
-    elif p_type == "ㄷ형강 (C-Channel)":
+    elif p_type == "C-Channel":
         pts = [
             rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
             rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(-B/2 + t1_val, -H/2 + t2_val, 0),
@@ -127,14 +127,14 @@ def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=Non
             rg.Point3d(B/2, H/2, 0), rg.Point3d(-B/2, H/2, 0),
             rg.Point3d(-B/2, -H/2, 0)
         ]
-    elif p_type == "L형강 (L-Plate)":
+    elif p_type == "L-Plate":
         pts = [
             rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
             rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(-B/2 + t1_val, -H/2 + t2_val, 0),
             rg.Point3d(-B/2 + t1_val, H/2, 0), rg.Point3d(-B/2, H/2, 0),
             rg.Point3d(-B/2, -H/2, 0)
         ]
-    elif p_type == "T형강 (T-Beam)":
+    elif p_type == "T-Beam":
         # T형강도 외적 연산을 위해 완벽한 CCW 순서로 재정렬
         pts = [
             rg.Point3d(-t1_val/2, -H/2, 0), rg.Point3d(t1_val/2, -H/2, 0),
@@ -253,10 +253,10 @@ class SteelConverterDialog(forms.Form):
     def __init__(self):
         forms.Form.__init__(self) 
         
-        self.Title = "철골 부재 3축 변환기"
-        self.ClientSize = drawing.Size(350, 520) 
+        self.Title = "철골 생성기"
+        self.ClientSize = drawing.Size(280, 430) 
         self.Padding = drawing.Padding(10)
-        self.Resizable = False
+        self.Resizable = True
         self.Topmost = True
         
         try:
@@ -267,8 +267,8 @@ class SteelConverterDialog(forms.Form):
         self.gizmo_radius_factor = 0.04
         self.gizmo_height_factor = 1.0   
         self.gizmo_text_offset = 1.2     
-        self.gizmo_min_size = 100        
-        self.gizmo_max_size = 2000       
+        self.gizmo_min_size = 400        
+        self.gizmo_max_size = 400       
         
         self.original_breps = []
         self.original_ids = []
@@ -300,10 +300,10 @@ class SteelConverterDialog(forms.Form):
         layout.Spacing = drawing.Size(5, 5)
 
         self.dd_profile = forms.DropDown()
-        self.dd_profile.DataStore = ["H형강 (H-Beam)", "ㄷ형강 (C-Channel)", "L형강 (L-Plate)", "T형강 (T-Beam)"]
+        self.dd_profile.DataStore = ["H-Beam", "C-Channel", "L-Plate", "T-Beam"]
         self.dd_profile.SelectedIndex = 0
         self.dd_profile.SelectedIndexChanged += self.OnUIChange
-        layout.AddRow("부재 프로파일:", self.dd_profile)
+        layout.AddRow("부재 형상:", self.dd_profile)
         
         self.image_view = forms.ImageView()
         self.image_view.Size = drawing.Size(120, 120) 
@@ -312,55 +312,55 @@ class SteelConverterDialog(forms.Form):
         img_layout.AddRow(None, self.image_view, None) 
         layout.AddRow(img_layout)
         
-        self.num_t1 = forms.NumericStepper(Value=6.5, DecimalPlaces=1, Increment=0.5)
+        self.num_t1 = forms.NumericStepper(Value=20.0, DecimalPlaces=1, Increment=0.5)
         self.num_t1.ValueChanged += self.OnUIChange
         layout.AddRow("Web 두께 (t1):", self.num_t1)
         
-        self.num_t2 = forms.NumericStepper(Value=9.0, DecimalPlaces=1, Increment=0.5)
+        self.num_t2 = forms.NumericStepper(Value=30.0, DecimalPlaces=1, Increment=0.5)
         self.num_t2.ValueChanged += self.OnUIChange
         layout.AddRow("Flange 두께 (t2):", self.num_t2)
         
         # --- r값 컨트롤러 추가 ---
-        self.num_r = forms.NumericStepper(Value=13.0, DecimalPlaces=1, Increment=1.0)
+        self.num_r = forms.NumericStepper(Value=20.0, DecimalPlaces=1, Increment=1.0)
         self.num_r.ValueChanged += self.OnUIChange
         layout.AddRow("Fillet 반경 (r):", self.num_r)
         
         layout.AddRow(None)
         
-        layout.AddRow(forms.Label(Text="📏 압출 길이 보정:"))
-        self.lbl_length = forms.Label(Text="인식된 길이: 계산 대기중...")
-        btn_reset_len = forms.Button(Text="길이 재설정 (2점 클릭)")
+        layout.AddRow(forms.Label(Text="📏 형상 길이 보정:"))
+        self.lbl_length = forms.Label(Text="길이: 계산 대기중...")
+        btn_reset_len = forms.Button(Text="길이 재설정")
         btn_reset_len.Click += self.OnResetLengthClick
         layout.AddRow(self.lbl_length, btn_reset_len)
 
         layout.AddRow(None)
         
-        layout.AddRow(forms.Label(Text="📐 방향 제어 (축별 회전):"))
-        btn_rot_x = forms.Button(Text="🔄 X축 (Red) 회전")
+        layout.AddRow(forms.Label(Text="📐 방향 제어 (축 회전):"))
+        btn_rot_x = forms.Button(Text="🔄 X축 회전")
         btn_rot_x.Click += self.OnRotX
         self.lbl_rot_x = forms.Label(Text="0도")
         layout.AddRow(btn_rot_x, self.lbl_rot_x)
         
-        btn_rot_y = forms.Button(Text="🔄 Y축 (Green) 회전")
+        btn_rot_y = forms.Button(Text="🔄 Y축 회전")
         btn_rot_y.Click += self.OnRotY
         self.lbl_rot_y = forms.Label(Text="0도")
         layout.AddRow(btn_rot_y, self.lbl_rot_y)
         
-        btn_rot_z = forms.Button(Text="🔄 Z축 (Blue) 회전")
+        btn_rot_z = forms.Button(Text="🔄 Z축 회전")
         btn_rot_z.Click += self.OnRotZ
         self.lbl_rot_z = forms.Label(Text="0도")
         layout.AddRow(btn_rot_z, self.lbl_rot_z)
         
-        layout.AddRow(None)
-        
-        self.btn_ok = forms.Button(Text="생성 및 원본 교체")
+        self.btn_ok = forms.Button(Text="확인")
         self.btn_ok.Click += self.OnOKClick
         self.btn_cancel = forms.Button(Text="취소")
         self.btn_cancel.Click += self.OnCancelClick
         
         btn_layout = forms.DynamicLayout(DefaultSpacing=drawing.Size(5, 5))
-        btn_layout.AddRow(None, self.btn_ok, self.btn_cancel)
+        btn_layout.AddRow(self.btn_ok, self.btn_cancel)
         layout.AddRow(btn_layout)
+
+        layout.AddRow(None)
         
         self.Content = layout
 
@@ -368,10 +368,10 @@ class SteelConverterDialog(forms.Form):
         if not self.script_dir: return 
         
         file_map = {
-            "H형강 (H-Beam)": "H-Beam.png",
-            "ㄷ형강 (C-Channel)": "C-Channel.png",
-            "L형강 (L-Plate)": "L-Plate.png",
-            "T형강 (T-Beam)": "T-Beam.png"
+            "H-Beam": "H-Beam.png",
+            "C-Channel": "C-Channel.png",
+            "L-Plate": "L-Plate.png",
+            "T-Beam": "T-Beam.png"
         }
         
         sel_val = self.dd_profile.SelectedValue
@@ -389,13 +389,13 @@ class SteelConverterDialog(forms.Form):
     def OnResetLengthClick(self, sender, e):
         self.Visible = False
         try:
-            pt1 = rs.GetPoint("압출할 길이의 '시작점'을 클릭하세요.")
+            pt1 = rs.GetPoint("길이의 '시작점'을 클릭하세요.")
             if pt1:
-                pt2 = rs.GetPoint("압출할 길이의 '끝점'을 클릭하세요.", pt1)
+                pt2 = rs.GetPoint("길이의 '끝점'을 클릭하세요.", pt1)
                 if pt2:
                     dist = pt1.DistanceTo(pt2)
                     self.custom_length = dist 
-                    self.lbl_length.Text = "수동 지정: {:.1f} mm".format(dist)
+                    self.lbl_length.Text = "길이: {:.1f} mm".format(dist)
         except Exception as ex:
             print(ex)
         finally:
@@ -514,7 +514,7 @@ class SteelConverterDialog(forms.Form):
 # -------------------------------------------------------------------------
 def main():
     go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("철골 부재를 생성할 기준을 선택하세요")
+    go.SetCommandPrompt("부재 생성방식 선택")
     op_select = go.AddOption("SelectExisting")
     op_draw = go.AddOption("Draw3PointBox")
     
@@ -526,7 +526,7 @@ def main():
     obj_ids = []
     
     if go.Option().EnglishName == "SelectExisting":
-        obj_ids = rs.GetObjects("철골 부재로 변환할 직육면체들을 모두 선택하세요.", rs.filter.polysurface)
+        obj_ids = rs.GetObjects("변환할 직육면체들을 선택하세요.", rs.filter.polysurface)
         if not obj_ids: return
         
     elif go.Option().EnglishName == "Draw3PointBox":
