@@ -4,7 +4,7 @@ import Rhino
 import scriptcontext as sc
 import Rhino.Geometry as rg
 
-def get_obb_bottom_corners(brep):
+def get_bb_bottom_corners(brep):
     """객체의 BoundingBox를 기반으로 하단 4개 꼭짓점을 반환합니다."""
     bbox = brep.GetBoundingBox(True)
     corners = bbox.GetCorners()
@@ -14,23 +14,23 @@ def get_obb_bottom_corners(brep):
 
 def drop_objects():
     # 1. 객체 선택 (Brep, Mesh, Extrusion 모두 허용)
-    objs = rs.GetObjects("낙하시킬 객체들을 선택하세요", 8+16+32) 
+    objs = rs.GetObjects("배치할 객체들을 선택하세요", 8+16+32) 
     if not objs: return
 
     # 2. 기준점 옵션 설정 (CLI 기반)
     get_opt = Rhino.Input.Custom.GetOption()
     get_opt.SetCommandPrompt("배치 옵션을 설정하세요")
-    opt_index = get_opt.AddOptionList("AnchorMode", ["Center", "OBB_Corners", "Vertices"], 0)
+    opt_index = get_opt.AddOptionList("AnchorMode", ["Center", "BB_Corners", "Vertices"], 0)
     
     get_opt.Get()
     
     # 선택 결과 가져오기
     chosen_mode_index = get_opt.OptionIndex()
-    mode_names = ["Center", "OBB_Corners", "Vertices"]
+    mode_names = ["Center", "BB_Corners", "Vertices"]
     anchor_mode = mode_names[chosen_mode_index]
 
     # 3. 타겟 지형 선택 (★ 메쉬(32) 추가 허용!)
-    target = rs.GetObject("타겟 지형(면 또는 메쉬)을 선택하세요", 8+16+32)
+    target = rs.GetObject("타겟 지형(서피스 또는 메쉬)을 선택하세요", 8+16+32)
     if not target: return
 
     rs.EnableRedraw(False)
@@ -53,8 +53,8 @@ def drop_objects():
         if anchor_mode == "Center":
             bbox = obj_geom.GetBoundingBox(True)
             pts = [bbox.Center]
-        elif anchor_mode == "OBB_Corners":
-            pts = get_obb_bottom_corners(obj_geom)
+        elif anchor_mode == "BB_Corners":
+            pts = get_bb_bottom_corners(obj_geom)
         else: # Vertices
             # 객체가 메쉬인 경우와 Brep인 경우를 나누어 정점(Vertex) 추출
             if isinstance(obj_geom, rg.Mesh):
