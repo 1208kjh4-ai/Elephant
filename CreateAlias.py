@@ -22,7 +22,10 @@ SHORTCUT_SETTINGS = {
     "3DTruss": '! _-RunPythonScript "Elephant/3DTruss"',
     "Hbeam": '! _-RunPythonScript "Elephant/Hbeam"',
     "Truss": '! _-RunPythonScript "Elephant/Truss"',
-    "Drop2Srf": '! _-RunPythonScript "Elephant/Drop2Srf"'
+    "Drop2Srf": '! _-RunPythonScript "Elephant/Drop2Srf"',
+    "MZ": '! _-RunPythonScript "Elephant/MZ"',
+    "DDZ": '! _-RunPythonScript "Elephant/DDZ"',
+    "Building": '! _-RunPythonScript "Elephant/BakeB"'
 }
 
 # ==============================================================================
