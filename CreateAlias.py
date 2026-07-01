@@ -10,12 +10,24 @@ SHORTCUT_SETTINGS = {
     "Cross": '! _-RunPythonScript "Elephant/Cross.py"',
     "Tree": '! _-RunPythonScript "Elephant/ArrayTree.py"',
     "AA": '! _-RunPythonScript "Elephant/ArrayBetween"',
-    "Parking": '! _-RunPythonScript "Elephant/Parking"',
     "Lane": '! _-RunPythonScript "Elephant/Lane"',
     "Swing": '! _-RunPythonScript "Elephant/Swing"',
     "Sliding": '! _-RunPythonScript "Elephant/Sliding"',
     "Folding": '! _-RunPythonScript "Elephant/Folding"',
     "Spinning": '! _-RunPythonScript "Elephant/Spinning"',
+    "Curtainwall": '! _-RunPythonScript "Elephant/Curtainwall"',
+    "Handrail": '! _-RunPythonScript "Elephant/Handrail"',
+    "SpiralStair": '! _-RunPythonScript "Elephant/SpiralStair"',
+    "SpaceTruss": '! _-RunPythonScript "Elephant/SpaceTruss"',
+    "3DTruss": '! _-RunPythonScript "Elephant/3DTruss"',
+    "Hbeam": '! _-RunPythonScript "Elephant/Hbeam"',
+    "Truss": '! _-RunPythonScript "Elephant/Truss"',
+    "Drop2Srf": '! _-RunPythonScript "Elephant/Drop2Srf"',
+    "MZ": '! _-RunPythonScript "Elephant/MZ"',
+    "DDZ": '! _-RunPythonScript "Elephant/DDZ"',
+    "Building": '! _-RunPythonScript "Elephant/BakeB"',
+    "Parapet": '! _-RunPythonScript "Elephant/Parapet"',
+    "CHP": '! _-RunPythonScript "Elephant/CHP"'
 }
 
 # ==============================================================================

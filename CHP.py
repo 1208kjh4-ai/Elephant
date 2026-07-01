@@ -70,29 +70,29 @@ class ChamferConduit(rd.DisplayConduit):
         
         if len(temp_pts) < 4:
             # 4점 미만일 때는 단순 선(Polyline)으로 프리뷰
-            e.Display.DrawPolyline(temp_pts, System.Drawing.Color.Gray, 2)
+            e.Display.DrawPolyline(temp_pts, System.Drawing.Color.Red, 4)
         else:
             # 4점이 다 찍히면 챔퍼된 프리뷰
             poly_pts = get_chamfered_points(temp_pts, self.d)
-            e.Display.DrawPolyline(poly_pts + [poly_pts[0]], System.Drawing.Color.Orange, 3)
+            e.Display.DrawPolyline(poly_pts + [poly_pts[0]], System.Drawing.Color.Orange, 4)
 
 def main():
     conduit = ChamferConduit()
     conduit.enabled = True
     
     gp = Rhino.Input.Custom.GetPoint()
-    gp.SetCommandPrompt("4개의 점을 순서대로 선택하세요.")
+    gp.SetCommandPrompt("4개의 점을 선택하세요. (값 변경 가능)")
     
-    # 옵션 추가
+    # 명령어 옵션 추가
     op_d = Rhino.Input.Custom.OptionDouble(sc.sticky.get(STICKY_KEY, 1.0))
     gp.AddOptionDouble("Chamfer", op_d)
-    
-    # 마우스 움직임 이벤트 연결 (핵심!)
-    gp.DynamicDraw += lambda sender, e: (setattr(conduit, 'curr_pt', e.CurrentPoint), conduit.DrawOverlay(e))
     
     pts = []
     while len(pts) < 4:
         conduit.d = op_d.CurrentValue
+        # 마우스 움직일 때마다 DrawOverlay 실행
+        gp.DynamicDraw += lambda sender, e: conduit.DrawOverlay(e)
+        
         res = gp.Get()
         
         if res == Rhino.Input.GetResult.Option:
@@ -105,9 +105,23 @@ def main():
             conduit.enabled = False
             return
 
+    # 점 4개 입력 후: Enter 누르기 전까지 여기서 대기하며 수정 가능
+    gp.SetCommandPrompt("검토 후 Enter를 누르세요.")
+    while True:
+        conduit.d = op_d.CurrentValue
+        res = gp.Get()
+        if res == Rhino.Input.GetResult.Option:
+            sc.sticky[STICKY_KEY] = op_d.CurrentValue
+            continue
+        else:
+            break
+
     conduit.enabled = False
-    Rhino.RhinoDoc.ActiveDoc.Objects.AddPolyline(get_chamfered_points(pts, op_d.CurrentValue) + [get_chamfered_poly(pts, op_d.CurrentValue)[0]])
-    Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+    
+    # 최종 생성
+    if len(pts) == 4:
+        Rhino.RhinoDoc.ActiveDoc.Objects.AddPolyline(get_chamfered_poly(pts, op_d.CurrentValue))
+        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
 if __name__ == "__main__":
     main()
