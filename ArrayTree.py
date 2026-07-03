@@ -21,13 +21,14 @@ def load_tree_library(file_name):
     if not os.path.exists(file_path): return None
 
     f3dm = Rhino.FileIO.File3dm.Read(file_path)
-    library = {"SoftWood": [], "HardWood": []}
+    library = {"SoftWood": [], "HardWood": [], "Simple": []}
     for obj in f3dm.Objects:
         name = obj.Attributes.Name
         if not name: continue
         geom = obj.Geometry.Duplicate()
         if name.startswith("SoftWood"): library["SoftWood"].append(geom)
         elif name.startswith("HardWood"): library["HardWood"].append(geom)
+        elif name.startswith("Simple"): library["Simple"].append(geom)
     return library
 
 # ==============================================================================
@@ -98,6 +99,7 @@ class TreeMasterForm(forms.Form):
 
         self.cb_soft = forms.CheckBox(); self.cb_soft.Text = "SoftWood (3종)"; self.cb_soft.Checked = True
         self.cb_hard = forms.CheckBox(); self.cb_hard.Text = "HardWood (6종)"; self.cb_hard.Checked = True
+        self.cb_simp = forms.CheckBox(); self.cb_simp.Text = "SimpleWood (17)"; self.cb_simp.Checked = True
 
         self.btn_bake = forms.Button(); self.btn_bake.Text = "Bake"; self.btn_bake.Height = 40
 
@@ -108,6 +110,7 @@ class TreeMasterForm(forms.Form):
         self.slider_max_scale.ValueChanged += self.OnScaleSliderChanged
         self.cb_soft.CheckedChanged += self.UpdateAll
         self.cb_hard.CheckedChanged += self.UpdateAll
+        self.cb_simp.CheckedChanged += self.UpdateAll
         self.btn_bake.Click += self.OnBakeClick
 
         layout = forms.DynamicLayout(); layout.Spacing = drawing.Size(10, 10)
@@ -118,7 +121,7 @@ class TreeMasterForm(forms.Form):
         layout.AddRow(self.lbl_scale_min, self.slider_min_scale)
         layout.AddRow(self.lbl_scale_max, self.slider_max_scale)
         layout.AddRow(None)
-        layout.AddRow(self.cb_soft); layout.AddRow(self.cb_hard)
+        layout.AddRow(self.cb_soft); layout.AddRow(self.cb_hard); layout.AddRow(self.cb_simp)
         layout.AddRow(None); layout.AddRow(self.btn_bake)
         self.Content = layout
         self.UpdateAll(None, None)
@@ -156,6 +159,7 @@ class TreeMasterForm(forms.Form):
         active_pool = []
         if self.cb_soft.Checked: active_pool.extend(self.library["SoftWood"])
         if self.cb_hard.Checked: active_pool.extend(self.library["HardWood"])
+        if self.cb_simp.Checked: active_pool.extend(self.library["Simple"])
         
         new_geoms = []
         if active_pool:
