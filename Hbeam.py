@@ -8,6 +8,233 @@ import math
 import rhinoscriptsyntax as rs
 import System
 import os
+import uuid
+
+# -------------------------------------------------------------------------
+# 0. 편집 기능용 메타데이터 유틸리티
+# -------------------------------------------------------------------------
+STEEL_KIND_KEY = "Steel_Edit_Kind"
+STEEL_ID_KEY = "Steel_Edit_ID"
+STEEL_SOURCE_ID_KEY = "Steel_Edit_SourceID"
+
+def _guid_to_str(g):
+    return str(g)
+
+def _set_user_text(obj_id, key, value):
+    try:
+        rs.SetUserText(obj_id, key, str(value))
+    except Exception as ex:
+        print("UserText 저장 오류:", ex)
+
+def _get_user_text(obj_id, key, default=None):
+    try:
+        val = rs.GetUserText(obj_id, key)
+        return val if val is not None else default
+    except:
+        return default
+
+def _to_bool(value, default=False):
+    if value is None: return default
+    return str(value).lower() in ["true", "1", "yes", "y"]
+
+def _to_int(value, default=0):
+    try: return int(float(value))
+    except: return default
+
+def _to_float(value, default=0.0):
+    try: return float(value)
+    except: return default
+
+def _get_doc_object(obj_id):
+    try:
+        return sc.doc.Objects.Find(System.Guid(str(obj_id)))
+    except:
+        try:
+            return sc.doc.Objects.Find(obj_id)
+        except:
+            return None
+
+def _get_brep_from_id(obj_id):
+    try:
+        return rs.coercebrep(System.Guid(str(obj_id)))
+    except:
+        try:
+            return rs.coercebrep(obj_id)
+        except:
+            return None
+
+
+def _pt_to_str(pt):
+    return "{:.17g},{:.17g},{:.17g}".format(pt.X, pt.Y, pt.Z)
+
+def _vec_to_str(vec):
+    return "{:.17g},{:.17g},{:.17g}".format(vec.X, vec.Y, vec.Z)
+
+def _str_to_point(text, default=None):
+    try:
+        vals = [float(x.strip()) for x in str(text).split(",")]
+        if len(vals) != 3: return default
+        return rg.Point3d(vals[0], vals[1], vals[2])
+    except:
+        return default
+
+def _str_to_vector(text, default=None):
+    try:
+        vals = [float(x.strip()) for x in str(text).split(",")]
+        if len(vals) != 3: return default
+        v = rg.Vector3d(vals[0], vals[1], vals[2])
+        if v.Length > 1e-9: v.Unitize()
+        return v
+    except:
+        return default
+
+def _source_data_from_brep(brep):
+    center, axes = get_obb_data(brep)
+    clean_axes = []
+    for vec, length in axes:
+        v = rg.Vector3d(vec)
+        if v.Length > 1e-9:
+            v.Unitize()
+            clean_axes.append((v, float(length)))
+    if center is None or len(clean_axes) < 3:
+        return None
+    return {"center": center, "axes": clean_axes[:3]}
+
+def _source_data_from_settings(settings):
+    if not settings: return None
+    center = settings.get("source_center", None)
+    axes = settings.get("source_axes", None)
+    if center is not None and axes and len(axes) >= 3:
+        return {"center": center, "axes": axes[:3]}
+    return None
+
+def _write_source_data(obj_id, source_data):
+    if not source_data: return
+    center = source_data.get("center", None)
+    axes = source_data.get("axes", [])
+    if center:
+        _set_user_text(obj_id, "Steel_SourceCenter", _pt_to_str(center))
+    for i, pair in enumerate(axes[:3]):
+        vec, length = pair
+        _set_user_text(obj_id, "Steel_SourceAxis{}".format(i), _vec_to_str(vec))
+        _set_user_text(obj_id, "Steel_SourceLength{}".format(i), float(length))
+
+def _read_source_data_from_user_text(obj_id):
+    center = _str_to_point(_get_user_text(obj_id, "Steel_SourceCenter"), None)
+    axes = []
+    for i in range(3):
+        vec = _str_to_vector(_get_user_text(obj_id, "Steel_SourceAxis{}".format(i)), None)
+        length = _to_float(_get_user_text(obj_id, "Steel_SourceLength{}".format(i)), 0.0)
+        if vec is None or length <= 0:
+            return None
+        axes.append((vec, length))
+    if center is None or len(axes) < 3:
+        return None
+    return {"center": center, "axes": axes}
+
+def _ensure_layer(layer_name, color=None, visible=True):
+    if not rs.IsLayer(layer_name):
+        if color: rs.AddLayer(layer_name, color)
+        else: rs.AddLayer(layer_name)
+    try: rs.LayerVisible(layer_name, visible)
+    except: pass
+
+def _make_hidden_source_copy(source_brep, steel_id):
+    layer_name = "Steel_EditSource"
+    _ensure_layer(layer_name, System.Drawing.Color.DarkGray, False)
+    dup = source_brep.DuplicateBrep() if hasattr(source_brep, "DuplicateBrep") else source_brep.Duplicate()
+    src_id = sc.doc.Objects.AddBrep(dup)
+    if src_id and src_id != System.Guid.Empty:
+        try: rs.ObjectLayer(src_id, layer_name)
+        except: pass
+        _set_user_text(src_id, STEEL_KIND_KEY, "source")
+        _set_user_text(src_id, STEEL_ID_KEY, steel_id)
+        try: sc.doc.Objects.Hide(src_id, True)
+        except: pass
+        return src_id
+    return None
+
+def _find_output_ids_by_steel_id(steel_id):
+    ids = []
+    try:
+        all_ids = rs.AllObjects(False) or []
+    except:
+        all_ids = []
+    for oid in all_ids:
+        if _get_user_text(oid, STEEL_KIND_KEY) == "output" and _get_user_text(oid, STEEL_ID_KEY) == steel_id:
+            ids.append(oid)
+    return ids
+
+def _read_steel_settings(obj_id):
+    if _get_user_text(obj_id, STEEL_KIND_KEY) != "output":
+        return None
+    steel_id = _get_user_text(obj_id, STEEL_ID_KEY)
+    if not steel_id:
+        return None
+
+    source_data = _read_source_data_from_user_text(obj_id)
+
+    # Backward compatibility: objects made by the earlier hidden-source version
+    # can still be edited once, then they will be rewritten with embedded source data.
+    source_id = _get_user_text(obj_id, STEEL_SOURCE_ID_KEY)
+    if source_data is None and source_id:
+        source_brep = _get_brep_from_id(source_id)
+        if source_brep:
+            source_data = _source_data_from_brep(source_brep)
+
+    if source_data is None:
+        return None
+
+    settings = {
+        "steel_id": steel_id,
+        "source_data": source_data,
+        "source_id": source_id,
+        "profile_index": _to_int(_get_user_text(obj_id, "Steel_ProfileIndex"), 0),
+        "t1": _to_float(_get_user_text(obj_id, "Steel_t1"), 20.0),
+        "t2": _to_float(_get_user_text(obj_id, "Steel_t2"), 30.0),
+        "r": _to_float(_get_user_text(obj_id, "Steel_r"), 20.0),
+        "rot_x": _to_int(_get_user_text(obj_id, "Steel_RotX"), 0),
+        "rot_y": _to_int(_get_user_text(obj_id, "Steel_RotY"), 0),
+        "rot_z": _to_int(_get_user_text(obj_id, "Steel_RotZ"), 0),
+        "custom_length": _get_user_text(obj_id, "Steel_CustomLength"),
+        "custom_b": _get_user_text(obj_id, "Steel_CustomB"),
+        "custom_h": _get_user_text(obj_id, "Steel_CustomH")
+    }
+    if settings["custom_length"] in [None, "", "None"]:
+        settings["custom_length"] = None
+    else:
+        settings["custom_length"] = _to_float(settings["custom_length"], None)
+
+    if settings["custom_b"] in [None, "", "None"]:
+        settings["custom_b"] = None
+    else:
+        settings["custom_b"] = _to_float(settings["custom_b"], None)
+
+    if settings["custom_h"] in [None, "", "None"]:
+        settings["custom_h"] = None
+    else:
+        settings["custom_h"] = _to_float(settings["custom_h"], None)
+    return settings
+
+def _write_steel_settings(obj_id, steel_id, source_data, settings):
+    _set_user_text(obj_id, STEEL_KIND_KEY, "output")
+    _set_user_text(obj_id, STEEL_ID_KEY, steel_id)
+    # New method: store the source OBB directly on the result object.
+    _write_source_data(obj_id, source_data)
+    _set_user_text(obj_id, "Steel_ProfileIndex", settings.get("profile_index", 0))
+    _set_user_text(obj_id, "Steel_t1", settings.get("t1", 20.0))
+    _set_user_text(obj_id, "Steel_t2", settings.get("t2", 30.0))
+    _set_user_text(obj_id, "Steel_r", settings.get("r", 20.0))
+    _set_user_text(obj_id, "Steel_RotX", settings.get("rot_x", 0))
+    _set_user_text(obj_id, "Steel_RotY", settings.get("rot_y", 0))
+    _set_user_text(obj_id, "Steel_RotZ", settings.get("rot_z", 0))
+    cl = settings.get("custom_length", None)
+    _set_user_text(obj_id, "Steel_CustomLength", "" if cl is None else cl)
+    cb = settings.get("custom_b", None)
+    _set_user_text(obj_id, "Steel_CustomB", "" if cb is None else cb)
+    ch = settings.get("custom_h", None)
+    _set_user_text(obj_id, "Steel_CustomH", "" if ch is None else ch)
+
 
 # -------------------------------------------------------------------------
 # 1. 기하학 엔진: 직육면체(Brep)에서 중심과 3축 길이(OBB) 완벽 추출
@@ -56,9 +283,21 @@ def get_obb_data(brep):
 # -------------------------------------------------------------------------
 # 2. 기하학 엔진: 3차원 평면 회전, r값 연산 및 솔리드 압출
 # -------------------------------------------------------------------------
-def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=None):
-    center, axes = get_obb_data(brep)
-    
+def generate_steel_member_from_source(source_data, p_type, t1, t2, r, ax, ay, az, custom_length=None, custom_B=None, custom_H=None):
+    if not source_data:
+        return None, None, None
+
+    center = source_data.get("center", None)
+    axes = []
+    for vec, length in source_data.get("axes", []):
+        v = rg.Vector3d(vec)
+        if v.Length > 1e-9:
+            v.Unitize()
+            axes.append((v, float(length)))
+
+    if center is None or len(axes) < 3:
+        return None, None, None
+
     axes.sort(key=lambda x: x[1], reverse=True)
     vec_z, len_z = axes[0]
     vec_x, len_x = axes[1]
@@ -80,7 +319,11 @@ def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=Non
         elif abs(vec * plane.YAxis) > 0.9: H = length
         elif abs(vec * plane.ZAxis) > 0.9: L = length
         
-    if custom_length is not None:
+    if custom_B is not None and custom_B > 0:
+        B = custom_B
+    if custom_H is not None and custom_H > 0:
+        H = custom_H
+    if custom_length is not None and custom_length > 0:
         L = custom_length
 
     if B < 0.001 or H < 0.001 or L < 0.001: return None, None, None
@@ -206,6 +449,11 @@ def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=Non
         return final_brep, gizmo_plane, max(B, H) 
     return None, None, None
 
+
+def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=None, custom_B=None, custom_H=None):
+    source_data = _source_data_from_brep(brep)
+    return generate_steel_member_from_source(source_data, p_type, t1, t2, r, ax, ay, az, custom_length, custom_B, custom_H)
+
 # -------------------------------------------------------------------------
 # 3. 프리뷰 컨두잇 (철골 부재 + 직관적인 3D 축 기즈모 렌더링)
 # -------------------------------------------------------------------------
@@ -254,7 +502,7 @@ class SteelConverterDialog(forms.Form):
         forms.Form.__init__(self) 
         
         self.Title = "철골 생성기"
-        self.ClientSize = drawing.Size(280, 430) 
+        self.ClientSize = drawing.Size(320, 570) 
         self.Padding = drawing.Padding(10)
         self.Resizable = True
         self.Topmost = True
@@ -272,25 +520,62 @@ class SteelConverterDialog(forms.Form):
         
         self.original_breps = []
         self.original_ids = []
+        self.source_data_list = []
+        self.edit_mode = False
+        self.edit_settings = None
+        self.edit_output_ids = []
+        self.source_ids = []
+        self.output_layer = None
         
         self.angle_x = 0
         self.angle_y = 0
         self.angle_z = 0
         self.custom_length = None 
+        self.custom_B = None
+        self.custom_H = None
         
         self.conduit = SteelPreviewConduit()
         self.conduit.Enabled = False
         
-    def SetupData(self, original_breps, original_ids):
-        self.original_breps = original_breps
-        self.original_ids = original_ids
+    def SetupData(self, original_breps, original_ids, edit_settings=None, edit_output_ids=None, source_ids=None, output_layer=None, source_data_list=None):
+        self.original_breps = original_breps if original_breps else []
+        self.original_ids = original_ids if original_ids else []
+        self.edit_settings = edit_settings
+        self.edit_mode = edit_settings is not None
+        self.edit_output_ids = edit_output_ids if edit_output_ids else []
+        self.source_ids = source_ids if source_ids else []  # legacy only
+        self.output_layer = output_layer
+
+        if source_data_list:
+            self.source_data_list = source_data_list
+        elif self.edit_mode and edit_settings and edit_settings.get("source_data", None):
+            self.source_data_list = [edit_settings.get("source_data")]
+        else:
+            self.source_data_list = []
+            for b in self.original_breps:
+                src = _source_data_from_brep(b)
+                if src: self.source_data_list.append(src)
         
         self.CreateUI()
-        self.LoadSticky()
+        if self.edit_mode:
+            self.LoadEditSettings(edit_settings)
+            self.btn_ok.Text = "수정"
+            self.Title = "철골 수정기"
+        else:
+            self.LoadSticky()
         
-        _, axes = get_obb_data(self.original_breps[0])
-        init_L = max([length for vec, length in axes])
-        self.lbl_length.Text = "인식된 길이: {:.1f} mm".format(init_L)
+        if self.source_data_list:
+            axes_sorted = sorted(self.source_data_list[0].get("axes", []), key=lambda x: x[1], reverse=True)
+            init_L = axes_sorted[0][1] if len(axes_sorted) > 0 else 0.0
+            init_B = axes_sorted[1][1] if len(axes_sorted) > 1 else 0.0
+            init_H = axes_sorted[2][1] if len(axes_sorted) > 2 else 0.0
+        else:
+            init_L = init_B = init_H = 0.0
+        if self.custom_length is not None:
+            self.lbl_length.Text = "길이: {:.1f} mm".format(float(self.custom_length))
+        else:
+            self.lbl_length.Text = "인식된 길이: {:.1f} mm".format(init_L)
+        self.lbl_xy_auto.Text = "자동 X/Y: {:.1f} / {:.1f} mm".format(init_B, init_H)
         
         self.conduit.Enabled = True
         self.UpdatePreview()
@@ -332,6 +617,19 @@ class SteelConverterDialog(forms.Form):
         btn_reset_len = forms.Button(Text="길이 재설정")
         btn_reset_len.Click += self.OnResetLengthClick
         layout.AddRow(self.lbl_length, btn_reset_len)
+
+        layout.AddRow(None)
+        layout.AddRow(forms.Label(Text="📐 단면 X/Y 크기 수동 입력:"))
+        self.lbl_xy_auto = forms.Label(Text="자동 X/Y: 계산 대기중...")
+        layout.AddRow(self.lbl_xy_auto)
+        self.txt_custom_b = forms.TextBox(Text="")
+        self.txt_custom_b.Width = 80
+        self.txt_custom_h = forms.TextBox(Text="")
+        self.txt_custom_h.Width = 80
+        self.txt_custom_b.TextChanged += self.OnManualSizeTextChanged
+        self.txt_custom_h.TextChanged += self.OnManualSizeTextChanged
+        layout.AddRow(forms.Label(Text="X 크기(B):"), self.txt_custom_b, forms.Label(Text="비우면 자동"))
+        layout.AddRow(forms.Label(Text="Y 크기(H):"), self.txt_custom_h, forms.Label(Text="비우면 자동"))
 
         layout.AddRow(None)
         
@@ -402,6 +700,22 @@ class SteelConverterDialog(forms.Form):
             self.Visible = True
             self.UpdatePreview()
 
+    def _parse_optional_float(self, text):
+        try:
+            if text is None: return None
+            text = str(text).strip()
+            if text == "": return None
+            value = float(text)
+            if value <= 0: return None
+            return value
+        except:
+            return None
+
+    def OnManualSizeTextChanged(self, sender, e):
+        self.custom_B = self._parse_optional_float(self.txt_custom_b.Text)
+        self.custom_H = self._parse_optional_float(self.txt_custom_h.Text)
+        self.UpdatePreview()
+
     def LoadSticky(self):
         if "Steel_Type" in sc.sticky: self.dd_profile.SelectedIndex = sc.sticky["Steel_Type"]
         if "Steel_t1" in sc.sticky: self.num_t1.Value = sc.sticky["Steel_t1"]
@@ -416,6 +730,40 @@ class SteelConverterDialog(forms.Form):
         if "Steel_RotZ" in sc.sticky: 
             self.angle_z = sc.sticky["Steel_RotZ"]
             self.lbl_rot_z.Text = "{}도".format(self.angle_z)
+
+    def LoadEditSettings(self, settings):
+        if not settings: return
+        self.dd_profile.SelectedIndex = int(settings.get("profile_index", 0))
+        self.num_t1.Value = float(settings.get("t1", 20.0))
+        self.num_t2.Value = float(settings.get("t2", 30.0))
+        self.num_r.Value = float(settings.get("r", 20.0))
+        self.angle_x = int(settings.get("rot_x", 0))
+        self.angle_y = int(settings.get("rot_y", 0))
+        self.angle_z = int(settings.get("rot_z", 0))
+        self.custom_length = settings.get("custom_length", None)
+        self.custom_B = settings.get("custom_b", None)
+        self.custom_H = settings.get("custom_h", None)
+        if self.custom_B is not None:
+            self.txt_custom_b.Text = "{:.1f}".format(float(self.custom_B))
+        if self.custom_H is not None:
+            self.txt_custom_h.Text = "{:.1f}".format(float(self.custom_H))
+        self.lbl_rot_x.Text = "{}도".format(self.angle_x)
+        self.lbl_rot_y.Text = "{}도".format(self.angle_y)
+        self.lbl_rot_z.Text = "{}도".format(self.angle_z)
+
+    def CurrentSettings(self):
+        return {
+            "profile_index": int(self.dd_profile.SelectedIndex),
+            "t1": float(self.num_t1.Value),
+            "t2": float(self.num_t2.Value),
+            "r": float(self.num_r.Value),
+            "rot_x": int(self.angle_x),
+            "rot_y": int(self.angle_y),
+            "rot_z": int(self.angle_z),
+            "custom_length": self.custom_length,
+            "custom_b": self.custom_B,
+            "custom_h": self.custom_H
+        }
 
     def SaveSticky(self):
         sc.sticky["Steel_Type"] = self.dd_profile.SelectedIndex
@@ -451,13 +799,15 @@ class SteelConverterDialog(forms.Form):
         t1 = self.num_t1.Value
         t2 = self.num_t2.Value
         r = self.num_r.Value # 뷰포트 업데이트 시 r값 전달
+        self.custom_B = self._parse_optional_float(self.txt_custom_b.Text)
+        self.custom_H = self._parse_optional_float(self.txt_custom_h.Text)
         
         self.conduit.breps = []
         self.conduit.gizmo_breps = []
         self.conduit.gizmo_texts = []
         
-        for b in self.original_breps:
-            result = generate_steel_member(b, p_type, t1, t2, r, self.angle_x, self.angle_y, self.angle_z, self.custom_length)
+        for source_data in self.source_data_list:
+            result = generate_steel_member_from_source(source_data, p_type, t1, t2, r, self.angle_x, self.angle_y, self.angle_z, self.custom_length, self.custom_B, self.custom_H)
             
             if result and result[0]:
                 steel_brep, gizmo_plane, max_dim = result
@@ -492,10 +842,46 @@ class SteelConverterDialog(forms.Form):
     def OnOKClick(self, sender, e):
         self.SaveSticky()
         self.conduit.Enabled = False
-        for b in self.conduit.breps:
-            sc.doc.Objects.AddBrep(b)
-        for bid in self.original_ids:
-            sc.doc.Objects.Delete(bid, True)
+        settings = self.CurrentSettings()
+        new_output_ids = []
+
+        for i, b in enumerate(self.conduit.breps):
+            if not b: continue
+
+            if self.edit_mode:
+                if self.edit_settings and self.edit_settings.get("steel_id", None):
+                    steel_id = self.edit_settings.get("steel_id")
+                else:
+                    steel_id = str(uuid.uuid4())
+            else:
+                steel_id = str(uuid.uuid4())
+
+            if i < len(self.source_data_list):
+                source_data = self.source_data_list[i]
+            elif self.source_data_list:
+                source_data = self.source_data_list[0]
+            else:
+                source_data = None
+
+            obj_id = sc.doc.Objects.AddBrep(b)
+            if obj_id and obj_id != System.Guid.Empty:
+                if self.output_layer and rs.IsLayer(self.output_layer):
+                    try: rs.ObjectLayer(obj_id, self.output_layer)
+                    except: pass
+                _write_steel_settings(obj_id, steel_id, source_data, settings)
+                new_output_ids.append(obj_id)
+
+        if self.edit_mode:
+            for old_id in self.edit_output_ids:
+                try: sc.doc.Objects.Delete(System.Guid(str(old_id)), True)
+                except:
+                    try: sc.doc.Objects.Delete(old_id, True)
+                    except: pass
+        else:
+            for bid in self.original_ids:
+                try: sc.doc.Objects.Delete(bid, True)
+                except: pass
+
         sc.doc.Views.Redraw()
         self.Close()
 
@@ -512,38 +898,92 @@ class SteelConverterDialog(forms.Form):
 # -------------------------------------------------------------------------
 # 5. 실행 함수
 # -------------------------------------------------------------------------
-def main():
-    go = Rhino.Input.Custom.GetOption()
-    go.SetCommandPrompt("부재 생성방식 선택")
-    op_select = go.AddOption("SelectExisting")
-    op_draw = go.AddOption("Draw3PointBox")
-    
-    get_rc = go.Get()
-    
-    if get_rc != Rhino.Input.GetResult.Option:
-        return
-        
-    obj_ids = []
-    
-    if go.Option().EnglishName == "SelectExisting":
-        obj_ids = rs.GetObjects("변환할 직육면체들을 선택하세요.", rs.filter.polysurface)
-        if not obj_ids: return
-        
-    elif go.Option().EnglishName == "Draw3PointBox":
-        rs.Command("-_Box _3Point Pause Pause Pause Pause")
-        new_objs = rs.LastCreatedObjects()
-        if new_objs:
-            obj_ids = new_objs
-        else:
-            print("박스 생성이 취소되었거나 실패했습니다.")
-            return
-
+def _open_dialog_for_new(obj_ids):
     breps = [rs.coercebrep(id) for id in obj_ids]
+    breps = [b for b in breps if b]
     if not breps: return
-    
+
     dialog = SteelConverterDialog()
     dialog.SetupData(breps, obj_ids)
+    dialog.Owner = Rhino.UI.RhinoEtoApp.MainWindow
     dialog.Show()
+
+def _open_dialog_for_edit(selected_id):
+    settings = _read_steel_settings(selected_id)
+    if not settings:
+        return False
+
+    source_data = settings.get("source_data", None)
+    if not source_data:
+        rs.MessageBox("편집용 기준 OBB 데이터를 찾을 수 없습니다.\n이 객체는 다시 수정할 수 없습니다.", 0, "수정 오류")
+        return True
+
+    steel_id = settings.get("steel_id")
+    output_ids = _find_output_ids_by_steel_id(steel_id)
+    if not output_ids:
+        output_ids = [selected_id]
+
+    try:
+        output_layer = rs.ObjectLayer(selected_id)
+    except:
+        output_layer = None
+
+    dialog = SteelConverterDialog()
+    dialog.SetupData([], [], edit_settings=settings, edit_output_ids=output_ids, output_layer=output_layer, source_data_list=[source_data])
+    dialog.Owner = Rhino.UI.RhinoEtoApp.MainWindow
+    dialog.Show()
+    return True
+
+def main():
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("수정할 철골 부재를 선택하거나, 변환할 직육면체를 선택하세요")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Brep
+    go.SubObjectSelect = False
+    go.EnablePreSelect(False, True)
+
+    opt_draw = go.AddOption("Draw3PointBox")
+    opt_multi = go.AddOption("SelectMultipleBoxes")
+
+    get_rc = go.Get()
+
+    if get_rc == Rhino.Input.GetResult.Option:
+        if go.Option().Index == opt_draw:
+            rs.UnselectAllObjects()
+            rs.Command("-_Box _3Point Pause Pause Pause Pause")
+            new_objs = rs.LastCreatedObjects()
+            if new_objs:
+                _open_dialog_for_new(new_objs)
+            else:
+                print("박스 생성이 취소되었거나 실패했습니다.")
+            return
+
+        elif go.Option().Index == opt_multi:
+            rs.UnselectAllObjects()
+            obj_ids = rs.GetObjects("변환할 직육면체들을 선택하세요.", rs.filter.polysurface)
+            if obj_ids:
+                _open_dialog_for_new(obj_ids)
+            return
+
+    elif get_rc == Rhino.Input.GetResult.Object:
+        obj_ref = go.Object(0)
+        obj_id = obj_ref.ObjectId
+
+        if _open_dialog_for_edit(obj_id):
+            return
+
+        brep = obj_ref.Brep()
+        if not brep:
+            rs.MessageBox("선택한 객체에서 Brep 정보를 읽을 수 없습니다.", 0, "선택 오류")
+            return
+
+        if len(list(brep.Faces)) != 6:
+            rs.MessageBox("이 객체에는 편집용 데이터가 없습니다.\n새 철골 부재로 변환하려면 6면 직육면체를 선택하거나 Draw3PointBox 옵션을 사용하세요.", 0, "선택 오류")
+            return
+
+        _open_dialog_for_new([obj_id])
+        return
+
+    return
 
 if __name__ == "__main__":
     main()

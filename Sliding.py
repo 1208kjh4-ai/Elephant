@@ -5,8 +5,166 @@ import Rhino.Display as rd
 import Eto.Forms as forms
 import Eto.Drawing as drawing
 import rhinoscriptsyntax as rs
-import scriptcontext as sc  # [추가] 라이노 메모리(sticky) 접근을 위한 모듈
+import scriptcontext as sc
 import System
+import json
+
+# ==============================================================================
+# 미닫이문 식별 / 재수정용 UserText Key
+# ==============================================================================
+DOOR_DATA_KEY = "SlidingDoor_Data"
+DOOR_ID_KEY = "SlidingDoor_Id"
+DOOR_PART_KEY = "SlidingDoor_Part"
+
+# ==============================================================================
+# [0] 저장 / 불러오기 유틸리티
+# ==============================================================================
+def _point_to_list(p):
+    return [float(p.X), float(p.Y), float(p.Z)]
+
+
+def _vector_to_list(v):
+    return [float(v.X), float(v.Y), float(v.Z)]
+
+
+def _list_to_point(values):
+    return rg.Point3d(float(values[0]), float(values[1]), float(values[2]))
+
+
+def _list_to_vector(values):
+    return rg.Vector3d(float(values[0]), float(values[1]), float(values[2]))
+
+
+def plane_to_data(plane):
+    return {
+        "origin": _point_to_list(plane.Origin),
+        "xaxis": _vector_to_list(plane.XAxis),
+        "yaxis": _vector_to_list(plane.YAxis)
+    }
+
+
+def plane_from_data(data):
+    return rg.Plane(
+        _list_to_point(data["origin"]),
+        _list_to_vector(data["xaxis"]),
+        _list_to_vector(data["yaxis"])
+    )
+
+
+def read_door_data_from_object(obj_id):
+    try:
+        raw = rs.GetUserText(obj_id, DOOR_DATA_KEY)
+    except:
+        raw = None
+
+    if not raw:
+        return None
+
+    try:
+        data = json.loads(raw)
+    except:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    if data.get("type") != "SlidingDoor":
+        return None
+
+    if "base_plane" not in data or "width" not in data or "height" not in data:
+        return None
+
+    return data
+
+
+def _try_get_edit_data_from_getobject(go):
+    try:
+        obj_ref = go.Object(0)
+    except:
+        return None
+
+    # 일반 객체 선택 또는 SubObject/Edge 선택 모두 parent ObjectId에서 UserText를 읽는다.
+    try:
+        obj_id = obj_ref.ObjectId
+    except:
+        obj_id = None
+
+    if obj_id:
+        data = read_door_data_from_object(obj_id)
+        if data:
+            return data
+
+    try:
+        rh_obj = obj_ref.Object()
+    except:
+        rh_obj = None
+
+    if rh_obj:
+        try:
+            data = read_door_data_from_object(rh_obj.Id)
+            if data:
+                return data
+        except:
+            pass
+
+    return None
+
+
+def find_existing_door_from_selection():
+    selected = rs.SelectedObjects()
+    if not selected:
+        return None
+
+    for obj_id in selected:
+        data = read_door_data_from_object(obj_id)
+        if data:
+            return data
+
+    return None
+
+
+def find_all_objects_by_door_id(door_id):
+    result = []
+    all_objects = rs.AllObjects()
+    if not all_objects:
+        return result
+
+    for obj_id in all_objects:
+        try:
+            stored_id = rs.GetUserText(obj_id, DOOR_ID_KEY)
+        except:
+            stored_id = None
+
+        if stored_id == door_id:
+            result.append(obj_id)
+
+    return result
+
+
+def make_door_data_string(door_id, base_plane, width, height, settings):
+    data = {
+        "type": "SlidingDoor",
+        "version": 1,
+        "door_id": door_id,
+        "base_plane": plane_to_data(base_plane),
+        "width": float(width),
+        "height": float(height),
+        "settings": settings
+    }
+    return json.dumps(data)
+
+
+def clear_selection_and_redraw():
+    # 선택 오류 후 같은 객체가 pre-select 상태로 남아 있으면
+    # GetObject가 같은 객체를 반복해서 받아 메시지 박스가 계속 뜰 수 있다.
+    try:
+        rs.UnselectAllObjects()
+    except:
+        pass
+    try:
+        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+    except:
+        pass
 
 # ==============================================================================
 # [1] 독립형 미리보기 엔진 (실시간 변화 반영)
@@ -17,7 +175,7 @@ class DoorPreviewConduit(rd.DisplayConduit):
         self.preview_breps = []
         self.frame_mat = rd.DisplayMaterial(System.Drawing.Color.Indigo)
         self.glass_mat = rd.DisplayMaterial(System.Drawing.Color.AliceBlue)
-        self.glass_mat.Transparency = 0.5 
+        self.glass_mat.Transparency = 0.5
 
     def DrawForeground(self, e):
         for name, brep in self.preview_breps:
@@ -27,16 +185,17 @@ class DoorPreviewConduit(rd.DisplayConduit):
                 e.Display.DrawBrepWires(brep, System.Drawing.Color.Black, 1)
 
 # ==============================================================================
-# [2] 미닫이문 전용 다이얼로그 (설정 저장/로드 및 크기 수정 반영)
+# [2] 미닫이문 전용 다이얼로그 (설정 저장/로드 및 수정 모드 지원)
 # ==============================================================================
 class SlidingDoorDialog(forms.Dialog[bool]):
-    def __init__(self, base_plane, width, height):
-        self.Title = "세부 설정"
+    def __init__(self, base_plane, width, height, initial_settings=None, edit_mode=False):
+        self.edit_mode = edit_mode
+        self.Title = "미닫이문 수정" if edit_mode else "세부 설정"
         self.base_plane, self.width, self.height = base_plane, width, height
+        self.initial_settings = initial_settings or None
         self.conduit = DoorPreviewConduit()
         self.conduit.Enabled = True
-        
-        # [기억 기능] 저장된 값이 없으면 사용할 기본값 정의
+
         self.default_settings = {
             "panel_count": 2,
             "has_threshold": True,
@@ -47,23 +206,25 @@ class SlidingDoorDialog(forms.Dialog[bool]):
             "union": False,
             "open_value": 0
         }
-        # sticky 메모리에서 설정을 불러옴 (없으면 기본값 사용)
-        self.saved_settings = sc.sticky.get("SlidingDoor_Settings", self.default_settings)
-        
+
+        if self.initial_settings:
+            self.saved_settings = self.initial_settings
+        else:
+            self.saved_settings = sc.sticky.get("SlidingDoor_Settings", self.default_settings)
+
         self.layout = forms.DynamicLayout(Spacing=drawing.Size(5, 8), Padding=20)
         self.SetupUI()
         self.layout.AddRow(None)
-        
-        # [수정] OK 버튼을 누르면 설정을 저장하는 전용 함수(OnOkClick)를 거치도록 연결
-        btn_ok = forms.Button(Text="생성")
+
+        btn_ok = forms.Button(Text="수정" if edit_mode else "생성")
         btn_ok.Click += self.OnOkClick
-        
+
         btn_cancel = forms.Button(Text="취소")
         btn_cancel.Click += lambda s,e: self.Close(False)
-        
+
         self.layout.AddRow(btn_ok, btn_cancel)
         self.Content = self.layout
-        
+
         self.Shown += lambda s, e: self.UpdatePreview()
 
     def SetupUI(self):
@@ -71,18 +232,25 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         self.rb_cnt_2 = forms.RadioButton(Text="2개")
         self.rb_cnt_3 = forms.RadioButton(self.rb_cnt_2, Text="3개")
         self.rb_cnt_4 = forms.RadioButton(self.rb_cnt_2, Text="4개")
-        
-        saved_cnt = self.saved_settings.get("panel_count", 3)
-        if saved_cnt == 2: self.rb_cnt_2.Checked = True
-        elif saved_cnt == 4: self.rb_cnt_4.Checked = True
-        else: self.rb_cnt_2.Checked = True
-        
+
+        saved_cnt = int(self.saved_settings.get("panel_count", 2))
+        if saved_cnt == 2:
+            self.rb_cnt_2.Checked = True
+        elif saved_cnt == 3:
+            self.rb_cnt_3.Checked = True
+        elif saved_cnt == 4:
+            self.rb_cnt_4.Checked = True
+        else:
+            self.rb_cnt_2.Checked = True
+
         # 2. 문턱 라디오 버튼 세팅 및 로드
         self.rb_threshold_on = forms.RadioButton(Text="있음")
         self.rb_threshold_off = forms.RadioButton(self.rb_threshold_on, Text="없음")
-        if self.saved_settings.get("has_threshold", True): self.rb_threshold_on.Checked = True
-        else: self.rb_threshold_off.Checked = True
-        
+        if self.saved_settings.get("has_threshold", True):
+            self.rb_threshold_on.Checked = True
+        else:
+            self.rb_threshold_off.Checked = True
+
         # 3. 텍스트 박스 세팅, 너비 고정(50) 및 로드
         self.txt_t = forms.TextBox(Text=str(self.saved_settings.get("frame_t", "30")))
         self.txt_t.Width = 50
@@ -90,15 +258,15 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         self.txt_d.Width = 50
         self.txt_pframe_t = forms.TextBox(Text=str(self.saved_settings.get("pframe_t", "60")))
         self.txt_pframe_t.Width = 50
-        
+
         # 4. 체크박스 및 슬라이더 세팅 및 로드
-        self.cb_flip = forms.CheckBox(Text="뒤집기", Checked=self.saved_settings.get("flip", False))
-        self.cb_union = forms.CheckBox(Text="프레임 결합", Checked=self.saved_settings.get("union", False))
-        
-        saved_open = self.saved_settings.get("open_value", 0)
+        self.cb_flip = forms.CheckBox(Text="뒤집기", Checked=bool(self.saved_settings.get("flip", False)))
+        self.cb_union = forms.CheckBox(Text="프레임 결합", Checked=bool(self.saved_settings.get("union", False)))
+
+        saved_open = int(self.saved_settings.get("open_value", 0))
         self.sli_open = forms.Slider(MinValue=0, MaxValue=100, Value=saved_open)
         self.lbl_open = forms.Label(Text=str(saved_open) + "%")
-        
+
         # 이벤트 연결
         self.rb_cnt_2.CheckedChanged += lambda s,e: self.UpdatePreview()
         self.rb_cnt_3.CheckedChanged += lambda s,e: self.UpdatePreview()
@@ -109,10 +277,9 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         self.cb_union.CheckedChanged += lambda s,e: self.UpdatePreview()
         self.txt_t.TextChanged += lambda s,e: self.UpdatePreview()
         self.txt_d.TextChanged += lambda s,e: self.UpdatePreview()
-        self.txt_pframe_t.TextChanged += lambda s,e: self.UpdatePreview() 
+        self.txt_pframe_t.TextChanged += lambda s,e: self.UpdatePreview()
         self.sli_open.ValueChanged += lambda s,e: (setattr(self.lbl_open, 'Text', str(self.sli_open.Value)+"%"), self.UpdatePreview())
-            
-        # [수정 반영] 텍스트 박스 행 끝에 None을 배치하여 강제 늘어남 현상 방지 (정렬 최적화)
+
         self.layout.AddRow(forms.Label(Text="문 개수:"), self.rb_cnt_2, self.rb_cnt_3, self.rb_cnt_4)
         self.layout.AddRow(forms.Label(Text="문턱:"), self.rb_threshold_on, self.rb_threshold_off)
         self.layout.AddRow(forms.Label(Text="문틀 두께(mm):"), self.txt_t)
@@ -121,31 +288,35 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         self.layout.AddRow(self.cb_flip, self.cb_union)
         self.layout.AddRow(forms.Label(Text="열림 정도(0~100%):"), self.sli_open, self.lbl_open)
 
-    def OnOkClick(self, sender, args):
-        """ [신규 함수] 생성 버튼 클릭 시 현재 입력 항목들을 메모리에 저장하고 창을 닫음 """
-        if self.rb_cnt_2.Checked: current_cnt = 2
-        elif self.rb_cnt_4.Checked: current_cnt = 4
-        else: current_cnt = 3
-        
-        # 현재 값 딕셔너리 구성
-        current_settings = {
-            "panel_count": current_cnt,
-            "has_threshold": self.rb_threshold_on.Checked,
-            "frame_t": self.txt_t.Text,
-            "frame_d": self.txt_d.Text,
-            "pframe_t": self.txt_pframe_t.Text,
-            "flip": self.cb_flip.Checked,
-            "union": self.cb_union.Checked,
-            "open_value": self.sli_open.Value
+    def GetSettingsDict(self):
+        if self.rb_cnt_2.Checked:
+            current_cnt = 2
+        elif self.rb_cnt_4.Checked:
+            current_cnt = 4
+        else:
+            current_cnt = 3
+
+        return {
+            "panel_count": int(current_cnt),
+            "has_threshold": bool(self.rb_threshold_on.Checked),
+            "frame_t": str(self.txt_t.Text),
+            "frame_d": str(self.txt_d.Text),
+            "pframe_t": str(self.txt_pframe_t.Text),
+            "flip": bool(self.cb_flip.Checked),
+            "union": bool(self.cb_union.Checked),
+            "open_value": int(self.sli_open.Value)
         }
-        
-        # 라이노 sticky 사전에 데이터 덮어쓰기 저장
+
+    def OnOkClick(self, sender, args):
+        current_settings = self.GetSettingsDict()
         sc.sticky["SlidingDoor_Settings"] = current_settings
         self.Close(True)
 
     def GetSafeFloat(self, text, default):
-        try: return float(text)
-        except: return default
+        try:
+            return float(text)
+        except:
+            return default
 
     def UpdatePreview(self):
         self.conduit.preview_breps = self.GenerateGeometry()
@@ -155,26 +326,29 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         W, H = self.width, self.height
         T_frame = self.GetSafeFloat(self.txt_t.Text, 30.0)
         D_frame = self.GetSafeFloat(self.txt_d.Text, 200.0)
-        
+
         has_threshold = self.rb_threshold_on.Checked
         do_union = self.cb_union.Checked
-        
-        if self.rb_cnt_4.Checked: panel_count = 4
-        elif self.rb_cnt_3.Checked: panel_count = 3
-        else: panel_count = 2
-        
+
+        if self.rb_cnt_4.Checked:
+            panel_count = 4
+        elif self.rb_cnt_3.Checked:
+            panel_count = 3
+        else:
+            panel_count = 2
+
         T_pframe = self.GetSafeFloat(self.txt_pframe_t.Text, 60.0)
         T_pdepth = 30.0
         T_glass = 10.0
-        
+
         open_ratio = self.sli_open.Value / 100.0
         parts = []
-        tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance 
-        
+        tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
+
         outer_frames = []
         outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, T_frame), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
         outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(W - T_frame, W), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
-        
+
         if do_union:
             outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
             if has_threshold:
@@ -187,19 +361,22 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         if do_union:
             unioned_outer = rg.Brep.CreateBooleanUnion(outer_frames, tol)
             if unioned_outer and len(unioned_outer) > 0:
-                for b in unioned_outer: parts.append(("frame", b))
+                for b in unioned_outer:
+                    parts.append(("frame", b))
             else:
-                for b in outer_frames: parts.append(("frame", b))
+                for b in outer_frames:
+                    parts.append(("frame", b))
         else:
-            for b in outer_frames: parts.append(("frame", b))
+            for b in outer_frames:
+                parts.append(("frame", b))
 
         z_start = T_frame if has_threshold else 0.0
         z_end = H - T_frame
         total_w = W - (2 * T_frame)
-        
+
         num_overlaps = 2 if panel_count in [3, 4] else 1
         p_w = (total_w + num_overlaps * T_pframe) / panel_count
-        
+
         if panel_count == 2:
             y_coords = [30.0, 60.0]
             x_starts = [T_frame, T_frame + p_w - T_pframe]
@@ -209,67 +386,73 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         else:
             y_coords = [30.0, 60.0, 60.0, 30.0]
             x_starts = [T_frame, T_frame + p_w - T_pframe, T_frame + 2 * p_w - T_pframe, T_frame + 3 * p_w - 2 * T_pframe]
-        
+
         for i in range(panel_count):
             x_start = x_starts[i]
             move_x = 0
-            
+
             if panel_count == 2:
-                if i == 0: move_x = open_ratio * (p_w - T_pframe)
+                if i == 0:
+                    move_x = open_ratio * (p_w - T_pframe)
             elif panel_count == 3:
-                if i == 0: move_x = open_ratio * 2 * (p_w - T_pframe)
-                elif i == 1: move_x = open_ratio * 1 * (p_w - T_pframe)
+                if i == 0:
+                    move_x = open_ratio * 2 * (p_w - T_pframe)
+                elif i == 1:
+                    move_x = open_ratio * 1 * (p_w - T_pframe)
             elif panel_count == 4:
                 if i == 1 or i == 2:
                     move_x = open_ratio * (p_w - T_pframe) * (1 if i % 2 == 0 else -1)
-            
+
             x0 = x_start + move_x
             x1 = x0 + p_w
             y_s = y_coords[i]
-            
-            def make_box(ix, iy, iz): return rg.Box(rg.Plane.WorldXY, ix, iy, iz).ToBrep()
-            
+
+            def make_box(ix, iy, iz):
+                return rg.Box(rg.Plane.WorldXY, ix, iy, iz).ToBrep()
+
             iy_frame = rg.Interval(y_s, y_s + T_pdepth)
             glass_y_offset = (T_pdepth - T_glass) / 2.0
             iy_glass = rg.Interval(y_s + glass_y_offset, y_s + glass_y_offset + T_glass)
-            
+
             panel_frames = []
-            
+
             if do_union:
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe))) 
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end))) 
-                panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start, z_end))) 
-                panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start, z_end))) 
-                
+                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe)))
+                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end)))
+                panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start, z_end)))
+                panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start, z_end)))
+
                 unioned_panel = rg.Brep.CreateBooleanUnion(panel_frames, tol)
                 if unioned_panel and len(unioned_panel) > 0:
-                    for b in unioned_panel: parts.append(("frame", b))
+                    for b in unioned_panel:
+                        parts.append(("frame", b))
                 else:
-                    for b in panel_frames: parts.append(("frame", b))
+                    for b in panel_frames:
+                        parts.append(("frame", b))
             else:
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe))) 
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end))) 
-                panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe))) 
-                panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe))) 
-                for b in panel_frames: parts.append(("frame", b))
-            
+                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe)))
+                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end)))
+                panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe)))
+                panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe)))
+                for b in panel_frames:
+                    parts.append(("frame", b))
+
             parts.append(("glass", make_box(rg.Interval(x0 + T_pframe, x1 - T_pframe), iy_glass, rg.Interval(z_start + T_pframe, z_end - T_pframe))))
-            
+
         xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, rg.Plane(self.base_plane))
         if self.cb_flip.Checked:
             xform = xform * rg.Transform.Scale(rg.Plane.WorldXY, 1.0, -1.0, 1.0)
-            
+
         final_parts = []
         for n, b in parts:
             b.Transform(xform)
             final_parts.append((n, b))
-            
+
         return final_parts
 
     def OnClosed(self, e):
         self.conduit.Enabled = False
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
-
 
 # ==============================================================================
 # [3] 입력 방식 분기 처리용 로직
@@ -278,18 +461,34 @@ def process_two_curves(c1, c2):
     def get_bottom_top(c):
         s, e = c.PointAtStart, c.PointAtEnd
         return (e, s) if s.Z > e.Z else (s, e)
-        
-    p1_b, p1_t = get_bottom_top(c1)
-    p2_b, p2_t = get_bottom_top(c2)
-    
+
+    try:
+        p1_b, p1_t = get_bottom_top(c1)
+        p2_b, p2_t = get_bottom_top(c2)
+    except:
+        return None
+
     if p1_b.X > p2_b.X or (abs(p1_b.X - p2_b.X) < 1e-4 and p1_b.Y > p2_b.Y):
         p1_b, p2_b = p2_b, p1_b
         p1_t, p2_t = p2_t, p1_t
-        
-    z_vec = (p1_t - p1_b); height = z_vec.Length; z_vec.Unitize()
-    x_vec = (p2_b - p1_b); width = x_vec.Length; x_vec.Unitize()
-    y_vec = Rhino.Geometry.Vector3d.CrossProduct(z_vec, x_vec); y_vec.Unitize()
-    
+
+    z_vec = (p1_t - p1_b)
+    height = z_vec.Length
+    if height < 1e-4:
+        return None
+    z_vec.Unitize()
+
+    x_vec = (p2_b - p1_b)
+    width = x_vec.Length
+    if width < 1e-4:
+        return None
+    x_vec.Unitize()
+
+    y_vec = Rhino.Geometry.Vector3d.CrossProduct(z_vec, x_vec)
+    if y_vec.Length < 1e-4:
+        return None
+    y_vec.Unitize()
+
     base_plane = rg.Plane(p1_b, x_vec, y_vec)
     return base_plane, width, height
 
@@ -297,25 +496,28 @@ def process_two_curves(c1, c2):
 def get_3point_rectangle():
     gp1 = Rhino.Input.Custom.GetPoint()
     gp1.SetCommandPrompt("직사각형의 첫 번째 구석점을 지정하세요.")
-    if gp1.Get() != Rhino.Input.GetResult.Point: return None, 0, 0
+    if gp1.Get() != Rhino.Input.GetResult.Point:
+        return None, 0, 0
     p1 = gp1.Point()
-    
+
     gp2 = Rhino.Input.Custom.GetPoint()
     gp2.SetCommandPrompt("두 번째 점을 지정하세요 (너비 방향).")
     gp2.SetBasePoint(p1, True)
     gp2.DrawLineFromPoint(p1, True)
-    if gp2.Get() != Rhino.Input.GetResult.Point: return None, 0, 0
+    if gp2.Get() != Rhino.Input.GetResult.Point:
+        return None, 0, 0
     p2 = gp2.Point()
-    
+
     x_vec = p2 - p1
     width = x_vec.Length
-    if width < 1e-4: return None, 0, 0
+    if width < 1e-4:
+        return None, 0, 0
     x_vec.Unitize()
-    
+
     gp3 = Rhino.Input.Custom.GetPoint()
     gp3.SetCommandPrompt("세 번째 점을 지정하세요 (높이 방향).")
     gp3.SetBasePoint(p2, True)
-    
+
     def DynamicRectangleDraw(sender, args):
         current_pt = args.CurrentPoint
         v13 = current_pt - p1
@@ -327,84 +529,230 @@ def get_3point_rectangle():
         args.Display.DrawLine(p2, p3_projected, System.Drawing.Color.DarkRed, 2)
         args.Display.DrawLine(p3_projected, p4, System.Drawing.Color.DarkRed, 2)
         args.Display.DrawLine(p4, p1, System.Drawing.Color.DarkRed, 2)
-        
+
     gp3.DynamicDraw += DynamicRectangleDraw
-    if gp3.Get() != Rhino.Input.GetResult.Point: return None, 0, 0
+    if gp3.Get() != Rhino.Input.GetResult.Point:
+        return None, 0, 0
     p3 = gp3.Point()
-    
+
     v13 = p3 - p1
     proj_len = v13 * x_vec
     z_vec = v13 - (x_vec * proj_len)
     height = z_vec.Length
-    if height < 1e-4: return None, 0, 0
+    if height < 1e-4:
+        return None, 0, 0
     z_vec.Unitize()
-    
+
     y_vec = Rhino.Geometry.Vector3d.CrossProduct(z_vec, x_vec)
+    if y_vec.Length < 1e-4:
+        return None, 0, 0
     y_vec.Unitize()
-    
+
     base_plane = rg.Plane(p1, x_vec, y_vec)
     return base_plane, width, height
 
 
-# ==============================================================================
-# [4] 메인 실행부 (기본 모서리 선택 + 명령행 직사각형 옵션 전환 포함)
-# ==============================================================================
-def main():
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("개구부의 두 수직 모서리를 선택하거나 옵션을 고르세요.")
-    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
-    go.SubObjectSelect = True 
-    
-    opt_rect = go.AddOption("Rectangle")
-    
-    base_plane = None
-    width = 0
-    height = 0
-    
+def get_door_target_from_user():
     while True:
-        res = go.GetMultiple(2, 2)
-        
+        # 첫 번째 선택에서 자동 판별한다.
+        # - 미닫이문 데이터가 있는 Brep/객체: 즉시 수정 모드
+        # - 일반 커브/엣지: 신규 생성용 첫 번째 수직 모서리로 보고 두 번째 모서리를 이어서 받음
+        go1 = Rhino.Input.Custom.GetObject()
+        go1.SetCommandPrompt("수정할 미닫이문 선택, 혹은 개구부의 수직 모서리 선택. Rectangle 옵션 사용 가능.")
+        go1.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter | Rhino.DocObjects.ObjectType.Brep
+        go1.SubObjectSelect = True
+        try:
+            go1.EnablePreSelect(False, True)
+        except:
+            pass
+        try:
+            go1.GroupSelect = False
+        except:
+            pass
+
+        opt_rect = go1.AddOption("Rectangle")
+        res = go1.Get()
+
+        if res == Rhino.Input.GetResult.Cancel:
+            return None
+
         if res == Rhino.Input.GetResult.Option:
-            if go.Option().Index == opt_rect:
+            if go1.Option().Index == opt_rect:
                 base_plane, width, height = get_3point_rectangle()
                 if base_plane is not None:
-                    break
-                else:
-                    go.ClearObjects()
-                    continue
-                    
-        elif res == Rhino.Input.GetResult.Object:
-            if go.ObjectCount == 2:
-                c1 = go.Object(0).Curve()
-                c2 = go.Object(1).Curve()
-                base_plane, width, height = process_two_curves(c1, c2)
-                break
-        else:
+                    return {"mode": "new", "base_plane": base_plane, "width": width, "height": height}
+                return None
+
+        if res != Rhino.Input.GetResult.Object:
+            return None
+
+        # 기존 미닫이문 객체라면 별도 Edit/New 질문 없이 바로 수정 팝업으로 넘어간다.
+        edit_data = _try_get_edit_data_from_getobject(go1)
+        if edit_data:
+            return {"mode": "edit", "edit_data": edit_data}
+
+        # 미닫이문이 아니면 신규 생성용 첫 번째 모서리로 해석한다.
+        try:
+            c1 = go1.Object(0).Curve()
+        except:
+            c1 = None
+
+        if not c1:
+            rs.MessageBox("선택한 객체에서 미닫이문 데이터를 찾지 못했습니다.\n수정하려면 이 스크립트로 생성된 미닫이문의 프레임 또는 유리 객체를 선택하세요.\n새로 만들려면 수직 모서리/커브를 선택하세요.", 0, "선택 오류")
+            clear_selection_and_redraw()
+            continue
+
+        go2 = Rhino.Input.Custom.GetObject()
+        go2.SetCommandPrompt("두 번째 수직 모서리를 선택하세요.")
+        go2.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
+        go2.SubObjectSelect = True
+        try:
+            go2.EnablePreSelect(False, True)
+        except:
+            pass
+        try:
+            go2.GroupSelect = False
+        except:
+            pass
+
+        res2 = go2.Get()
+        if res2 == Rhino.Input.GetResult.Cancel:
+            return None
+
+        if res2 != Rhino.Input.GetResult.Object:
+            return None
+
+        try:
+            c2 = go2.Object(0).Curve()
+        except:
+            c2 = None
+
+        result = process_two_curves(c1, c2)
+        if result:
+            base_plane, width, height = result
+            return {"mode": "new", "base_plane": base_plane, "width": width, "height": height}
+
+        rs.MessageBox("새로 생성하려면 두 개의 수직 모서리/커브를 선택해야 합니다.\n다시 선택해 주세요.", 0, "선택 오류")
+        clear_selection_and_redraw()
+
+    return None
+
+# ==============================================================================
+# [4] Bake / Update
+# ==============================================================================
+def bake_or_update_sliding_door(dlg, edit_data=None):
+    if edit_data and edit_data.get("door_id"):
+        door_id = edit_data.get("door_id")
+        old_object_ids = find_all_objects_by_door_id(door_id)
+    else:
+        door_id = str(System.Guid.NewGuid())
+        old_object_ids = []
+
+    settings = dlg.GetSettingsDict()
+    data_string = make_door_data_string(door_id, dlg.base_plane, dlg.width, dlg.height, settings)
+
+    rs.EnableRedraw(False)
+
+    # 수정 모드에서는 같은 door_id를 가진 기존 미닫이문 구성 객체를 모두 삭제한 뒤 다시 생성한다.
+    # 패널 수처럼 객체 개수가 달라지는 설정도 안전하게 반영된다.
+    if old_object_ids:
+        rs.DeleteObjects(old_object_ids)
+
+    group_name = rs.AddGroup()
+    baked_object_ids = []
+
+    for name, brep in dlg.GenerateGeometry():
+        obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(brep)
+        baked_object_ids.append(obj_id)
+
+        # 기존 스크립트의 레이어명을 유지한다.
+        layer_name = "Door_" + name
+        if not rs.IsLayer(layer_name):
+            rs.AddLayer(layer_name)
+        rs.ObjectLayer(obj_id, layer_name)
+
+        if name == "frame":
+            rs.ObjectColor(obj_id, [150, 150, 150])
+        elif name == "glass":
+            rs.ObjectColor(obj_id, [200, 230, 255])
+
+        # 다음 실행 때 선택해서 다시 수정할 수 있도록 모든 구성 객체에 동일한 데이터 저장
+        rs.SetUserText(obj_id, DOOR_DATA_KEY, data_string)
+        rs.SetUserText(obj_id, DOOR_ID_KEY, door_id)
+        rs.SetUserText(obj_id, DOOR_PART_KEY, name)
+
+    if baked_object_ids:
+        rs.AddObjectsToGroup(baked_object_ids, group_name)
+        rs.UnselectAllObjects()
+        rs.SelectObjects(baked_object_ids)
+
+    rs.EnableRedraw(True)
+    Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+
+# ==============================================================================
+# [5] 메인 실행부
+# ==============================================================================
+def main():
+    # 1) 실행 전에 이미 이 스크립트로 생성된 미닫이문 객체가 선택되어 있으면 즉시 수정 모드
+    edit_data = find_existing_door_from_selection()
+
+    if edit_data:
+        try:
+            base_plane = plane_from_data(edit_data["base_plane"])
+            width = float(edit_data["width"])
+            height = float(edit_data["height"])
+            settings = edit_data.get("settings", {})
+        except:
+            rs.MessageBox("선택한 미닫이문의 저장 데이터가 손상되어 수정할 수 없습니다.", 0, "데이터 오류")
             return
-            
-    dlg = SlidingDoorDialog(base_plane, width, height)
-    rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
-    
-    if rc:
-        rs.EnableRedraw(False)
-        group_name = rs.AddGroup()
-        baked_object_ids = []
-        
-        for name, brep in dlg.GenerateGeometry():
-            obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(brep)
-            baked_object_ids.append(obj_id)
-            
-            layer_name = "Door_" + name
-            if not rs.IsLayer(layer_name): rs.AddLayer(layer_name)
-            rs.ObjectLayer(obj_id, layer_name)
-            
-            if name == "frame": rs.ObjectColor(obj_id, [150, 150, 150])
-            elif name == "glass": rs.ObjectColor(obj_id, [200, 230, 255])
-            
-        if baked_object_ids:
-            rs.AddObjectsToGroup(baked_object_ids, group_name)
-            
-        rs.EnableRedraw(True)
+
+        dlg = SlidingDoorDialog(base_plane, width, height, settings, True)
+        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+
+        if rc:
+            bake_or_update_sliding_door(dlg, edit_data)
+        return
+
+    # 선택된 객체가 있었지만 editable sliding door가 아니면,
+    # 아래 GetObject 단계에서 같은 객체가 자동으로 다시 잡히지 않도록 비운다.
+    if rs.SelectedObjects():
+        clear_selection_and_redraw()
+
+    # 2) 실행 후 사용자가 선택하는 객체를 보고 자동 판별
+    #    - 미닫이문 객체: 수정
+    #    - 수직 모서리/커브 2개 또는 Rectangle: 신규 생성
+    target = get_door_target_from_user()
+    if not target:
+        return
+
+    if target.get("mode") == "edit":
+        edit_data = target.get("edit_data")
+        try:
+            base_plane = plane_from_data(edit_data["base_plane"])
+            width = float(edit_data["width"])
+            height = float(edit_data["height"])
+            settings = edit_data.get("settings", {})
+        except:
+            rs.MessageBox("선택한 미닫이문의 저장 데이터가 손상되어 수정할 수 없습니다.", 0, "데이터 오류")
+            return
+
+        dlg = SlidingDoorDialog(base_plane, width, height, settings, True)
+        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+
+        if rc:
+            bake_or_update_sliding_door(dlg, edit_data)
+        return
+
+    if target.get("mode") == "new":
+        base_plane = target.get("base_plane")
+        width = target.get("width")
+        height = target.get("height")
+
+        dlg = SlidingDoorDialog(base_plane, width, height, None, False)
+        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+
+        if rc:
+            bake_or_update_sliding_door(dlg, None)
 
 if __name__ == "__main__":
     main()

@@ -8,6 +8,125 @@ import Eto.Drawing as drawing
 import System
 import math
 
+# ==============================================================================
+# [0] Editable Spiral Stair metadata helpers
+# ==============================================================================
+META_TYPE_KEY = "SS_EDIT_TYPE"
+META_TYPE_VAL = "SpiralStair"
+META_ID_KEY = "SS_ID"
+META_PREFIX = "SS_"
+
+
+def _bool_to_text(value):
+    return "1" if value else "0"
+
+
+def _text_to_bool(value, default=False):
+    if value is None:
+        return default
+    value = str(value).strip().lower()
+    return value in ["1", "true", "yes", "y", "on"]
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except:
+        return default
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(float(value))
+    except:
+        return default
+
+
+def _pt_to_text(pt):
+    return "{0},{1},{2}".format(float(pt.X), float(pt.Y), float(pt.Z))
+
+
+def _vec_to_text(vec):
+    return "{0},{1},{2}".format(float(vec.X), float(vec.Y), float(vec.Z))
+
+
+def _text_to_pt(text):
+    vals = str(text).split(",")
+    if len(vals) < 3:
+        return rg.Point3d.Unset
+    return rg.Point3d(_safe_float(vals[0]), _safe_float(vals[1]), _safe_float(vals[2]))
+
+
+def _text_to_vec(text):
+    vals = str(text).split(",")
+    if len(vals) < 3:
+        return rg.Vector3d.Unset
+    return rg.Vector3d(_safe_float(vals[0]), _safe_float(vals[1]), _safe_float(vals[2]))
+
+
+def _set_user_texts(obj_id, data):
+    if not obj_id or obj_id == System.Guid.Empty:
+        return
+    rs.SetUserText(obj_id, META_TYPE_KEY, META_TYPE_VAL)
+    for key, value in data.items():
+        rs.SetUserText(obj_id, META_PREFIX + key, str(value))
+
+
+def _get_user_text(obj_id, key, default=None):
+    try:
+        val = rs.GetUserText(obj_id, key)
+        return default if val is None else val
+    except:
+        return default
+
+
+def _load_spiral_data_from_object(obj_id):
+    if not obj_id:
+        return None
+    if _get_user_text(obj_id, META_TYPE_KEY) != META_TYPE_VAL:
+        return None
+
+    data = {}
+    keys = [
+        "id", "center", "z_bottom", "z_top", "total_height", "vec_start", "vec_end", "base_angle",
+        "has_pole", "r_inner", "stair_width", "handrail_type", "hr_height", "stair_type", "turn_count", "is_flipped"
+    ]
+    for key in keys:
+        data[key] = _get_user_text(obj_id, META_PREFIX + key)
+
+    if not data.get("id"):
+        return None
+    return data
+
+
+def _collect_spiral_object_ids(spiral_id):
+    result = []
+    try:
+        all_ids = rs.AllObjects()
+    except:
+        all_ids = []
+
+    if not all_ids:
+        return result
+
+    for obj_id in all_ids:
+        if _get_user_text(obj_id, META_TYPE_KEY) == META_TYPE_VAL:
+            if _get_user_text(obj_id, META_PREFIX + "id") == spiral_id:
+                result.append(obj_id)
+    return result
+
+
+def _delete_objects_safe(obj_ids):
+    if not obj_ids:
+        return
+    valid_ids = []
+    for obj_id in obj_ids:
+        if obj_id and rs.IsObject(obj_id):
+            valid_ids.append(obj_id)
+    if valid_ids:
+        rs.DeleteObjects(valid_ids)
+
+
 # --- [1] 실시간 화면 표시 엔진 ---
 class SpiralStairPreviewConduit(Rhino.Display.DisplayConduit):
     def __init__(self):
@@ -45,7 +164,7 @@ class SpiralStairPreviewConduit(Rhino.Display.DisplayConduit):
 
 # --- [2] 지오메트리 계산 엔진 ---
 class SpiralStairEngine:
-    def __init__(self, crv1, crv2):
+    def __init__(self, crv1=None, crv2=None):
         self.crv1 = crv1
         self.crv2 = crv2
         self.doc = Rhino.RhinoDoc.ActiveDoc
@@ -59,7 +178,37 @@ class SpiralStairEngine:
         self.vec_end = None
         self.base_angle = 0.0
         
-        self.analyze_inputs()
+        if self.crv1 is not None and self.crv2 is not None:
+            self.analyze_inputs()
+
+    @classmethod
+    def FromSavedData(cls, data):
+        engine = cls(None, None)
+        engine.center_pt = _text_to_pt(data.get("center"))
+        engine.z_bottom = _safe_float(data.get("z_bottom"), 0.0)
+        engine.z_top = _safe_float(data.get("z_top"), 0.0)
+        engine.total_height = _safe_float(data.get("total_height"), abs(engine.z_top - engine.z_bottom))
+        engine.vec_start = _text_to_vec(data.get("vec_start"))
+        engine.vec_end = _text_to_vec(data.get("vec_end"))
+        if engine.vec_start and engine.vec_start.IsValid and engine.vec_start.Length > 0:
+            engine.vec_start.Unitize()
+        if engine.vec_end and engine.vec_end.IsValid and engine.vec_end.Length > 0:
+            engine.vec_end.Unitize()
+        engine.base_angle = _safe_float(data.get("base_angle"), 0.0)
+        if engine.center_pt == rg.Point3d.Unset or not engine.vec_start or not engine.vec_end:
+            engine.center_pt = None
+        return engine
+
+    def ToSavedData(self):
+        return {
+            "center": _pt_to_text(self.center_pt),
+            "z_bottom": self.z_bottom,
+            "z_top": self.z_top,
+            "total_height": self.total_height,
+            "vec_start": _vec_to_text(self.vec_start),
+            "vec_end": _vec_to_text(self.vec_end),
+            "base_angle": self.base_angle
+        }
 
     def analyze_inputs(self):
         p1_start = rg.Point3d(self.crv1.PointAtStart.X, self.crv1.PointAtStart.Y, 0)
@@ -310,10 +459,7 @@ class SpiralStairEngine:
                     profiles_str_in.append(get_c_profile(str_origin_in, v_up, v_flange_in, str_H, str_B, str_t))
                     profiles_str_out.append(get_c_profile(str_origin_out, v_up, v_flange_out, str_H, str_B, str_t))
                     
-                    # 💡 수정 반영: 가이드라인 점을 플랜지 폭의 절반(B * 0.5)만큼 각각 안쪽/바깥쪽으로 오프셋 연산
-                    # 내측 스트링거: 안쪽(v_flange_in)으로 B*0.5 만큼 이동하여 플랜지 정중앙 매칭
                     pt_in_guide = str_origin_in + rg.Vector3d(0,0, str_H/2.0) + v_flange_in * (str_B * 0.5)
-                    # 외측 스트링거: 바깥쪽(v_flange_out)으로 B*0.5 만큼 이동하여 플랜지 정중앙 매칭
                     pt_out_guide = str_origin_out + rg.Vector3d(0,0, str_H/2.0) + v_flange_out * (str_B * 0.5)
                     
                     pts_spiral_in_str_top.append(pt_in_guide)
@@ -361,42 +507,45 @@ class SpiralStairDialog(forms.Form):
         super(SpiralStairDialog, self).__init__()
         self.engine = None
         self.conduit = SpiralStairPreviewConduit()
+        self.initial_settings = {}
+        self.edit_id = None
+        self.edit_object_ids = []
         
         self.bake_stair_breps = []
         self.bake_hr_breps = []
         self.bake_hr_curves = []
         
-        self.Title = "원형 계단 생성기"
+        self.Title = "원형 계단 수정" if self.edit_id else "원형 계단 생성기"
         self.Padding = drawing.Padding(12)
         self.Resizable = True
         self.Topmost = True 
 
-        def_pole = sc.sticky.get("SP_Pole", True)
-        def_r_inner = sc.sticky.get("SP_RInner", 150)
-        def_width = sc.sticky.get("SP_Width", 1200)
-        def_type = sc.sticky.get("SP_Type", 0)
-        def_handrail = sc.sticky.get("SP_Handrail", 3)  
-        def_hr_height = sc.sticky.get("SP_HrHeight", 1500)
-        def_turns = sc.sticky.get("SP_Turns", 0)
-        def_flip = sc.sticky.get("SP_Flip", False)
+        def_pole = self.initial_settings.get("has_pole", sc.sticky.get("SP_Pole", True))
+        def_r_inner = self.initial_settings.get("r_inner", sc.sticky.get("SP_RInner", 150))
+        def_width = self.initial_settings.get("stair_width", sc.sticky.get("SP_Width", 1200))
+        def_type = self.initial_settings.get("stair_type", sc.sticky.get("SP_Type", 0))
+        def_handrail = self.initial_settings.get("handrail_type", sc.sticky.get("SP_Handrail", 3))
+        def_hr_height = self.initial_settings.get("hr_height", sc.sticky.get("SP_HrHeight", 1500))
+        def_turns = self.initial_settings.get("turn_count", sc.sticky.get("SP_Turns", 0))
+        def_flip = self.initial_settings.get("is_flipped", sc.sticky.get("SP_Flip", False))
 
-        self.chk_pole = forms.CheckBox(Text="중심 기둥 생성", Checked=def_pole)
-        self.nud_r_inner = forms.NumericStepper(Value=def_r_inner, DecimalPlaces=0, Increment=50, MinValue=0, MaxValue=99999)
-        self.nud_width = forms.NumericStepper(Value=def_width, DecimalPlaces=0, Increment=100, MinValue=300, MaxValue=99999)
+        self.chk_pole = forms.CheckBox(Text="중심 기둥 생성", Checked=bool(def_pole))
+        self.nud_r_inner = forms.NumericStepper(Value=float(def_r_inner), DecimalPlaces=0, Increment=50, MinValue=0, MaxValue=99999)
+        self.nud_width = forms.NumericStepper(Value=float(def_width), DecimalPlaces=0, Increment=100, MinValue=300, MaxValue=99999)
         
         self.cb_stair_type = forms.DropDown()
         self.cb_stair_type.DataStore = ["01. 솔리드 계단", "02. 계단 발판만"]
-        self.cb_stair_type.SelectedIndex = def_type
+        self.cb_stair_type.SelectedIndex = int(def_type)
         
         self.cb_handrail = forms.DropDown()
         self.cb_handrail.DataStore = ["없음", "가이드 라인", "솔리드 난간", "03. 철골"]
-        self.cb_handrail.SelectedIndex = def_handrail
+        self.cb_handrail.SelectedIndex = int(def_handrail)
         
-        self.nud_hr_height = forms.NumericStepper(Value=def_hr_height, DecimalPlaces=0, Increment=50, MinValue=300, MaxValue=3000)
-        self.nud_turns = forms.NumericStepper(Value=def_turns, DecimalPlaces=0, Increment=1, MinValue=0, MaxValue=10)
-        self.chk_flip = forms.CheckBox(Text="회전 방향 뒤집기 (Flip)", Checked=def_flip)
+        self.nud_hr_height = forms.NumericStepper(Value=float(def_hr_height), DecimalPlaces=0, Increment=50, MinValue=300, MaxValue=3000)
+        self.nud_turns = forms.NumericStepper(Value=int(def_turns), DecimalPlaces=0, Increment=1, MinValue=0, MaxValue=10)
+        self.chk_flip = forms.CheckBox(Text="회전 방향 뒤집기 (Flip)", Checked=bool(def_flip))
 
-        self.btn_create = forms.Button(Text="생성")
+        self.btn_create = forms.Button(Text="수정" if self.edit_id else "생성")
         self.btn_cancel = forms.Button(Text="취소")
 
         self.chk_pole.CheckedChanged += self.RefreshPreview
@@ -431,15 +580,74 @@ class SpiralStairDialog(forms.Form):
 
         self.Content = layout
 
+    def apply_edit_context(self, initial_settings, edit_id, edit_object_ids):
+        """Apply saved metadata after creating the Eto Form.
+        This avoids passing arguments directly into forms.Form constructor,
+        which can fail in Rhino/IronPython with: takes at most 2 arguments.
+        """
+        self.initial_settings = initial_settings if initial_settings else {}
+        self.edit_id = edit_id
+        self.edit_object_ids = edit_object_ids if edit_object_ids else []
+
+        self.Title = "원형 계단 수정" if self.edit_id else "원형 계단 생성기"
+        self.btn_create.Text = "수정" if self.edit_id else "생성"
+
+        self.chk_pole.Checked = bool(self.initial_settings.get("has_pole", self.chk_pole.Checked))
+        self.nud_r_inner.Value = float(self.initial_settings.get("r_inner", self.nud_r_inner.Value))
+        self.nud_width.Value = float(self.initial_settings.get("stair_width", self.nud_width.Value))
+
+        stair_type = _safe_int(self.initial_settings.get("stair_type", self.cb_stair_type.SelectedIndex), self.cb_stair_type.SelectedIndex)
+        if stair_type < 0: stair_type = 0
+        if stair_type > 1: stair_type = 1
+        self.cb_stair_type.SelectedIndex = stair_type
+
+        handrail_type = _safe_int(self.initial_settings.get("handrail_type", self.cb_handrail.SelectedIndex), self.cb_handrail.SelectedIndex)
+        if handrail_type < 0: handrail_type = 0
+        if handrail_type > 3: handrail_type = 3
+        self.cb_handrail.SelectedIndex = handrail_type
+
+        self.nud_hr_height.Value = float(self.initial_settings.get("hr_height", self.nud_hr_height.Value))
+        self.nud_turns.Value = int(self.initial_settings.get("turn_count", self.nud_turns.Value))
+        self.chk_flip.Checked = bool(self.initial_settings.get("is_flipped", self.chk_flip.Checked))
+
+    def get_current_settings(self):
+        return {
+            "has_pole": self.chk_pole.Checked,
+            "r_inner": float(self.nud_r_inner.Value),
+            "stair_width": float(self.nud_width.Value),
+            "stair_type": self.cb_stair_type.SelectedIndex,
+            "handrail_type": self.cb_handrail.SelectedIndex,
+            "hr_height": float(self.nud_hr_height.Value),
+            "turn_count": int(self.nud_turns.Value),
+            "is_flipped": self.chk_flip.Checked
+        }
+
     def save_settings(self):
-        sc.sticky["SP_Pole"] = self.chk_pole.Checked
-        sc.sticky["SP_RInner"] = float(self.nud_r_inner.Value)
-        sc.sticky["SP_Width"] = float(self.nud_width.Value)
-        sc.sticky["SP_Type"] = self.cb_stair_type.SelectedIndex
-        sc.sticky["SP_Handrail"] = self.cb_handrail.SelectedIndex
-        sc.sticky["SP_HrHeight"] = float(self.nud_hr_height.Value)
-        sc.sticky["SP_Turns"] = int(self.nud_turns.Value)
-        sc.sticky["SP_Flip"] = self.chk_flip.Checked
+        settings = self.get_current_settings()
+        sc.sticky["SP_Pole"] = settings["has_pole"]
+        sc.sticky["SP_RInner"] = settings["r_inner"]
+        sc.sticky["SP_Width"] = settings["stair_width"]
+        sc.sticky["SP_Type"] = settings["stair_type"]
+        sc.sticky["SP_Handrail"] = settings["handrail_type"]
+        sc.sticky["SP_HrHeight"] = settings["hr_height"]
+        sc.sticky["SP_Turns"] = settings["turn_count"]
+        sc.sticky["SP_Flip"] = settings["is_flipped"]
+        return settings
+
+    def build_metadata(self, spiral_id, settings):
+        data = {}
+        data["id"] = spiral_id
+        if self.engine:
+            data.update(self.engine.ToSavedData())
+        data["has_pole"] = _bool_to_text(settings["has_pole"])
+        data["r_inner"] = settings["r_inner"]
+        data["stair_width"] = settings["stair_width"]
+        data["handrail_type"] = settings["handrail_type"]
+        data["hr_height"] = settings["hr_height"]
+        data["stair_type"] = settings["stair_type"]
+        data["turn_count"] = settings["turn_count"]
+        data["is_flipped"] = _bool_to_text(settings["is_flipped"])
+        return data
 
     def setup_engine(self, engine):
         self.engine = engine
@@ -471,8 +679,11 @@ class SpiralStairDialog(forms.Form):
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
     def OnCreateClick(self, sender, e):
-        self.save_settings()
+        settings = self.save_settings()
         self.conduit.Enabled = False 
+        spiral_id = self.edit_id if self.edit_id else str(System.Guid.NewGuid())
+        metadata = self.build_metadata(spiral_id, settings)
+        new_object_ids = []
         
         try:
             rs.EnableRedraw(False)
@@ -492,23 +703,33 @@ class SpiralStairDialog(forms.Form):
                     obj_id = sc.doc.Objects.AddBrep(b)
                     if obj_id and obj_id != System.Guid.Empty:
                         rs.ObjectLayer(obj_id, layer_stair)
+                        _set_user_texts(obj_id, metadata)
                         if group_name: rs.AddObjectToGroup(obj_id, group_name)
+                        new_object_ids.append(obj_id)
             
             for b in self.bake_hr_breps:
                 if b and b.IsValid:
                     obj_id = sc.doc.Objects.AddBrep(b)
                     if obj_id and obj_id != System.Guid.Empty:
                         rs.ObjectLayer(obj_id, layer_handrail)
+                        _set_user_texts(obj_id, metadata)
                         if group_name: rs.AddObjectToGroup(obj_id, group_name)
+                        new_object_ids.append(obj_id)
                         
             for c in self.bake_hr_curves:
                 if c and c.IsValid:
                     obj_id = sc.doc.Objects.AddCurve(c)
                     if obj_id and obj_id != System.Guid.Empty:
                         rs.ObjectLayer(obj_id, layer_handrail)
+                        _set_user_texts(obj_id, metadata)
                         if group_name: rs.AddObjectToGroup(obj_id, group_name)
-                        
-            print("원형 계단 생성이 완료되었습니다!")
+                        new_object_ids.append(obj_id)
+
+            if self.edit_id and new_object_ids:
+                _delete_objects_safe(self.edit_object_ids)
+                print("원형 계단 수정이 완료되었습니다!")
+            else:
+                print("원형 계단 생성이 완료되었습니다!")
         except Exception as ex:
             print("Bake 처리 중 오류 발생:", ex)
         finally:
@@ -524,26 +745,110 @@ class SpiralStairDialog(forms.Form):
         self.conduit.Enabled = False
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
-# --- [4] 메인 실행 함수 ---
+
+# --- [4] 입력 및 자동 수정/신규 생성 분기 ---
+def _settings_from_saved_data(data):
+    return {
+        "has_pole": _text_to_bool(data.get("has_pole"), True),
+        "r_inner": _safe_float(data.get("r_inner"), 150.0),
+        "stair_width": _safe_float(data.get("stair_width"), 1200.0),
+        "handrail_type": _safe_int(data.get("handrail_type"), 3),
+        "hr_height": _safe_float(data.get("hr_height"), 1500.0),
+        "stair_type": _safe_int(data.get("stair_type"), 0),
+        "turn_count": _safe_int(data.get("turn_count"), 0),
+        "is_flipped": _text_to_bool(data.get("is_flipped"), False)
+    }
+
+
+def _get_second_curve():
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("새 원형 계단의 두 번째 기준 커브를 선택하세요.")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve
+    go.SubObjectSelect = False
+    go.EnablePreSelect(False, True)
+    res = go.Get()
+    if res != Rhino.Input.GetResult.Object:
+        return None
+    obj_ref = go.Object(0)
+    return obj_ref.Curve()
+
+
+def _get_auto_input():
+    while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt("수정할 원형 계단 객체 1개 또는 새 계단의 기준 커브 2개를 선택하세요.")
+        go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.Brep
+        go.SubObjectSelect = False
+        go.EnablePreSelect(False, True)
+        res = go.GetMultiple(1, 2)
+        
+        if res == Rhino.Input.GetResult.Cancel:
+            return None
+        if res != Rhino.Input.GetResult.Object:
+            return None
+
+        # 1. 생성된 원형 계단 객체인지 먼저 검사
+        for i in range(go.ObjectCount):
+            obj_ref = go.Object(i)
+            data = _load_spiral_data_from_object(obj_ref.ObjectId)
+            if data:
+                spiral_id = data.get("id")
+                object_ids = _collect_spiral_object_ids(spiral_id)
+                return {
+                    "mode": "edit",
+                    "data": data,
+                    "spiral_id": spiral_id,
+                    "object_ids": object_ids
+                }
+
+        # 2. 기존 원형 계단이 아니면 새 기준 커브 입력으로 처리
+        curves = []
+        for i in range(go.ObjectCount):
+            obj_ref = go.Object(i)
+            crv = obj_ref.Curve()
+            if crv:
+                curves.append(crv)
+
+        if len(curves) == 2:
+            return {"mode": "create", "curves": curves}
+        elif len(curves) == 1:
+            second = _get_second_curve()
+            if second:
+                return {"mode": "create", "curves": [curves[0], second]}
+            return None
+        else:
+            rs.MessageBox("기존 원형 계단 객체 또는 기준 커브를 선택해야 합니다.", 0, "선택 오류")
+            rs.UnselectAllObjects()
+            continue
+
+
+# --- [5] 메인 실행 함수 ---
 def main():
-    rs.Prompt("원형 계단의 시작과 끝을 나타내는 2개의 커브(직선 권장)를 선택하세요.")
-    crvs = rs.GetObjects("XY 평면에 평행한 커브 2개 선택", rs.filter.curve, minimum_count=2, maximum_count=2)
-    
-    if not crvs: return
-    
-    crv1 = rs.coercecurve(crvs[0])
-    crv2 = rs.coercecurve(crvs[1])
-    
-    engine = SpiralStairEngine(crv1, crv2)
-    
-    if engine.center_pt is None:
+    rs.Prompt("기존 원형 계단을 선택하면 수정하고, 일반 커브 2개를 선택하면 새로 생성합니다.")
+    result = _get_auto_input()
+    if not result:
         return
 
-    dlg = SpiralStairDialog()
+    if result["mode"] == "edit":
+        engine = SpiralStairEngine.FromSavedData(result["data"])
+        if engine.center_pt is None:
+            rs.MessageBox("선택한 원형 계단의 저장 정보를 읽을 수 없습니다.", 0, "수정 오류")
+            return
+        initial_settings = _settings_from_saved_data(result["data"])
+        dlg = SpiralStairDialog()
+        dlg.apply_edit_context(initial_settings, result["spiral_id"], result["object_ids"])
+    else:
+        crv1 = result["curves"][0]
+        crv2 = result["curves"][1]
+        engine = SpiralStairEngine(crv1, crv2)
+        if engine.center_pt is None:
+            return
+        dlg = SpiralStairDialog()
+
     dlg.setup_engine(engine)
-    
     dlg.Owner = Rhino.UI.RhinoEtoApp.MainWindow
     dlg.Show()
+
 
 if __name__ == "__main__":
     main()

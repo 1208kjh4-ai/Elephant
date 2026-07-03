@@ -10,6 +10,21 @@ import math
 import System
 
 # ==============================================================================
+# [0. 수정 기능용 메타데이터 키]
+# 생성된 객체마다 같은 Door ID와 설정값을 UserText로 저장합니다.
+# 다음 실행 시 선택 객체의 UserText를 읽어 수정 모드로 자동 진입합니다.
+# ==============================================================================
+TOOL_NAME = "SwingDoorEditable"
+META_PREFIX = "SwingDoor_Edit_"
+KEY_TOOL = META_PREFIX + "Tool"
+KEY_ID = META_PREFIX + "Id"
+KEY_BASE_PLANE = META_PREFIX + "BasePlane"
+KEY_WIDTH = META_PREFIX + "Width"
+KEY_HEIGHT = META_PREFIX + "Height"
+KEY_PART = META_PREFIX + "Part"
+
+
+# ==============================================================================
 # [1. 통합 미리보기 엔진]
 # ==============================================================================
 class DoorPreviewConduit(rd.DisplayConduit):
@@ -40,8 +55,9 @@ class DoorPreviewConduit(rd.DisplayConduit):
 # [2. 여닫이 세부 설정 창]
 # ==============================================================================
 class SwingDoorDialog(forms.Dialog[bool]):
-    def __init__(self, base_plane, width, height):
-        self.Title = "문 세부 설정"
+    def __init__(self, base_plane, width, height, initial_settings=None, edit_mode=False):
+        self.edit_mode = edit_mode
+        self.Title = "문 세부 설정 - 수정" if edit_mode else "문 세부 설정"
         self.Padding = drawing.Padding(20)
         self.base_plane = base_plane
         self.width = width
@@ -52,7 +68,7 @@ class SwingDoorDialog(forms.Dialog[bool]):
         self.conduit = DoorPreviewConduit()
         self.conduit.Enabled = True
 
-        s = sc.sticky.get("SwingDoor_Settings", {})
+        s = initial_settings if initial_settings is not None else sc.sticky.get("SwingDoor_Settings", {})
 
         self.rb_style_solid = forms.RadioButton(Text="솔리드 문")
         self.rb_style_glass = forms.RadioButton(self.rb_style_solid, Text="유리 문")
@@ -78,8 +94,12 @@ class SwingDoorDialog(forms.Dialog[bool]):
         self.txt_depth = forms.TextBox(Text=s.get("depth", "200"))
         self.txt_panel_frame = forms.TextBox(Text=s.get("panel_frame", "80")) 
         
-        self.sli_open = forms.Slider(MinValue=-90, MaxValue=90, Value=s.get("open_val", 0))
-        self.lbl_open_val = forms.Label(Text=str(self.sli_open.Value) + "°")
+        self._syncing_open_value = False
+        open_init = self.NormalizeOpenAngle(s.get("open_val", 0))
+        self.sli_open = forms.Slider(MinValue=-90, MaxValue=90, Value=open_init)
+        self.txt_open_val = forms.TextBox(Text=str(open_init))
+        self.txt_open_val.Width = 50
+        self.lbl_open_unit = forms.Label(Text="°")
         
         self.cb_flip = forms.CheckBox(Text="뒤집기", Checked=s.get("flip", False))
 
@@ -97,13 +117,14 @@ class SwingDoorDialog(forms.Dialog[bool]):
         open_layout = forms.DynamicLayout()
         open_layout.BeginHorizontal()
         open_layout.Add(self.sli_open, True, False)
-        open_layout.Add(self.lbl_open_val)
+        open_layout.Add(self.txt_open_val, False, False)
+        open_layout.Add(self.lbl_open_unit)
         open_layout.EndHorizontal()
         layout.AddRow("개방 각도:", open_layout)
         
         layout.AddRow(self.cb_flip)
         
-        btn_ok = forms.Button(Text="생성")
+        btn_ok = forms.Button(Text=("수정" if self.edit_mode else "생성"))
         btn_ok.Click += self.OnOkClicked
         layout.AddRow(btn_ok)
         self.Content = layout
@@ -126,25 +147,75 @@ class SwingDoorDialog(forms.Dialog[bool]):
         self.txt_depth.TextChanged += lambda sender,e: self.UpdatePreview()
         self.txt_panel_frame.TextChanged += lambda sender,e: self.UpdatePreview()
         self.sli_open.ValueChanged += self.OnSliderChanged
+        self.txt_open_val.TextChanged += self.OnOpenTextChanged
 
         self.UpdatePreview()
+
+    def NormalizeOpenAngle(self, value):
+        try:
+            angle = int(round(float(value)))
+        except:
+            angle = 0
+        if angle < -90: angle = -90
+        if angle > 90: angle = 90
+        return angle
+
+    def GetOpenAngleValue(self):
+        try:
+            text = self.txt_open_val.Text.strip()
+            if text in ["", "-", "+"]:
+                raise Exception()
+            return self.NormalizeOpenAngle(text)
+        except:
+            return self.NormalizeOpenAngle(self.sli_open.Value)
 
     def OnSliderChanged(self, sender, e):
-        self.lbl_open_val.Text = str(self.sli_open.Value) + "°"
+        if self._syncing_open_value: return
+        angle = self.NormalizeOpenAngle(self.sli_open.Value)
+        self._syncing_open_value = True
+        self.txt_open_val.Text = str(angle)
+        self._syncing_open_value = False
         self.UpdatePreview()
 
-    def OnOkClicked(self, sender, e):
-        sc.sticky["SwingDoor_Settings"] = {
+    def OnOpenTextChanged(self, sender, e):
+        if self._syncing_open_value: return
+        text = self.txt_open_val.Text.strip()
+        if text in ["", "-", "+"]:
+            return
+        try:
+            angle = int(round(float(text)))
+        except:
+            return
+        angle = self.NormalizeOpenAngle(angle)
+        self._syncing_open_value = True
+        if self.sli_open.Value != angle:
+            self.sli_open.Value = angle
+        if text != str(angle):
+            self.txt_open_val.Text = str(angle)
+        self._syncing_open_value = False
+        self.UpdatePreview()
+
+    def GetCurrentSettings(self):
+        return {
             "is_glass": self.rb_style_glass.Checked,
-            "glass_frame_type": self.dd_glass_frame.SelectedIndex, # [추가]
+            "glass_frame_type": self.dd_glass_frame.SelectedIndex,
             "is_double": self.rb_count_2.Checked,
             "handle_type": self.dd_handle.SelectedIndex,
             "thick": self.txt_thick.Text,
             "depth": self.txt_depth.Text,
             "panel_frame": self.txt_panel_frame.Text,
-            "open_val": self.sli_open.Value,
+            "open_val": self.GetOpenAngleValue(),
             "flip": self.cb_flip.Checked
         }
+
+    def OnOkClicked(self, sender, e):
+        angle = self.GetOpenAngleValue()
+        self._syncing_open_value = True
+        self.sli_open.Value = angle
+        self.txt_open_val.Text = str(angle)
+        self._syncing_open_value = False
+        settings = self.GetCurrentSettings()
+        sc.sticky["SwingDoor_Settings"] = settings
         self.Close(True)
 
     def GenerateGeometry(self):
@@ -156,7 +227,7 @@ class SwingDoorDialog(forms.Dialog[bool]):
         try: pf_w = float(self.txt_panel_frame.Text)
         except: pf_w = 80.0
         
-        angle = math.radians(self.sli_open.Value)
+        angle = math.radians(self.GetOpenAngleValue())
         is_double = self.rb_count_2.Checked
         is_glass_door = self.rb_style_glass.Checked
         handle_idx = self.dd_handle.SelectedIndex
@@ -375,6 +446,267 @@ class SwingDoorDialog(forms.Dialog[bool]):
         self.conduit.Enabled = False
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
+def bool_to_text(value):
+    return "1" if value else "0"
+
+
+def text_to_bool(value, default=False):
+    if value is None: return default
+    v = str(value).strip().lower()
+    return v in ["1", "true", "yes", "y", "on"]
+
+
+def text_to_int(value, default=0):
+    try: return int(float(value))
+    except: return default
+
+
+def text_to_float(value, default=0.0):
+    try: return float(value)
+    except: return default
+
+
+def plane_to_text(plane):
+    vals = [
+        plane.Origin.X, plane.Origin.Y, plane.Origin.Z,
+        plane.XAxis.X, plane.XAxis.Y, plane.XAxis.Z,
+        plane.YAxis.X, plane.YAxis.Y, plane.YAxis.Z
+    ]
+    return ",".join([str(float(v)) for v in vals])
+
+
+def text_to_plane(value):
+    try:
+        vals = [float(x) for x in value.split(",")]
+        if len(vals) != 9: return None
+        origin = rg.Point3d(vals[0], vals[1], vals[2])
+        x_axis = rg.Vector3d(vals[3], vals[4], vals[5])
+        y_axis = rg.Vector3d(vals[6], vals[7], vals[8])
+        if x_axis.Length < 1e-6 or y_axis.Length < 1e-6: return None
+        x_axis.Unitize()
+        y_axis.Unitize()
+        return rg.Plane(origin, x_axis, y_axis)
+    except:
+        return None
+
+
+def safe_get_user_text(obj_id, key):
+    try:
+        return rs.GetUserText(obj_id, key)
+    except:
+        return None
+
+
+def safe_set_user_text(obj_id, key, value):
+    try:
+        rs.SetUserText(obj_id, key, str(value))
+    except:
+        pass
+
+
+def object_ref_id(obj_ref):
+    try:
+        return obj_ref.ObjectId
+    except:
+        return None
+
+
+def get_curve_from_objref(obj_ref):
+    try:
+        c = obj_ref.Curve()
+        if c: return c
+    except:
+        pass
+    return None
+
+
+def load_swing_data_from_objref(obj_ref):
+    obj_id = object_ref_id(obj_ref)
+    if not obj_id: return None
+    if safe_get_user_text(obj_id, KEY_TOOL) != TOOL_NAME: return None
+
+    door_id = safe_get_user_text(obj_id, KEY_ID)
+    base_plane = text_to_plane(safe_get_user_text(obj_id, KEY_BASE_PLANE))
+    width = text_to_float(safe_get_user_text(obj_id, KEY_WIDTH), 0.0)
+    height = text_to_float(safe_get_user_text(obj_id, KEY_HEIGHT), 0.0)
+
+    if not door_id or base_plane is None or width <= 0 or height <= 0:
+        return None
+
+    settings = {
+        "is_glass": text_to_bool(safe_get_user_text(obj_id, META_PREFIX + "is_glass"), False),
+        "glass_frame_type": text_to_int(safe_get_user_text(obj_id, META_PREFIX + "glass_frame_type"), 0),
+        "is_double": text_to_bool(safe_get_user_text(obj_id, META_PREFIX + "is_double"), False),
+        "handle_type": text_to_int(safe_get_user_text(obj_id, META_PREFIX + "handle_type"), 0),
+        "thick": safe_get_user_text(obj_id, META_PREFIX + "thick") or "30",
+        "depth": safe_get_user_text(obj_id, META_PREFIX + "depth") or "200",
+        "panel_frame": safe_get_user_text(obj_id, META_PREFIX + "panel_frame") or "80",
+        "open_val": text_to_int(safe_get_user_text(obj_id, META_PREFIX + "open_val"), 0),
+        "flip": text_to_bool(safe_get_user_text(obj_id, META_PREFIX + "flip"), False)
+    }
+
+    # UI 인덱스 범위 보호
+    if settings["glass_frame_type"] < 0 or settings["glass_frame_type"] > 2:
+        settings["glass_frame_type"] = 0
+    if settings["handle_type"] < 0 or settings["handle_type"] > 5:
+        settings["handle_type"] = 0
+    if settings["open_val"] < -90: settings["open_val"] = -90
+    if settings["open_val"] > 90: settings["open_val"] = 90
+
+    return {
+        "mode": "edit",
+        "door_id": door_id,
+        "base_plane": base_plane,
+        "width": width,
+        "height": height,
+        "settings": settings
+    }
+
+
+def get_swing_object_ids(door_id):
+    ids = []
+    all_ids = rs.AllObjects()
+    if not all_ids: return ids
+    for obj_id in all_ids:
+        if safe_get_user_text(obj_id, KEY_TOOL) == TOOL_NAME and safe_get_user_text(obj_id, KEY_ID) == door_id:
+            ids.append(obj_id)
+    return ids
+
+
+def save_swing_metadata(obj_id, door_id, part_name, base_plane, width, height, settings):
+    safe_set_user_text(obj_id, KEY_TOOL, TOOL_NAME)
+    safe_set_user_text(obj_id, KEY_ID, door_id)
+    safe_set_user_text(obj_id, KEY_PART, part_name)
+    safe_set_user_text(obj_id, KEY_BASE_PLANE, plane_to_text(base_plane))
+    safe_set_user_text(obj_id, KEY_WIDTH, width)
+    safe_set_user_text(obj_id, KEY_HEIGHT, height)
+
+    for key, value in settings.items():
+        if isinstance(value, bool):
+            safe_set_user_text(obj_id, META_PREFIX + key, bool_to_text(value))
+        else:
+            safe_set_user_text(obj_id, META_PREFIX + key, value)
+
+    try:
+        rs.ObjectName(obj_id, "SwingDoor_" + str(door_id)[:8] + "_" + part_name)
+    except:
+        pass
+
+
+def process_two_curves(crv1, crv2):
+    if crv1 is None or crv2 is None: return None
+
+    def get_bottom_top(c):
+        s = c.PointAtStart
+        e = c.PointAtEnd
+        return (e, s) if s.Z > e.Z else (s, e)
+
+    p1_b, p1_t = get_bottom_top(crv1)
+    p2_b, p2_t = get_bottom_top(crv2)
+
+    if p1_b.X > p2_b.X or (abs(p1_b.X - p2_b.X) < 1e-4 and p1_b.Y > p2_b.Y):
+        p1_b, p2_b = p2_b, p1_b
+        p1_t, p2_t = p2_t, p1_t
+
+    z_vec = p1_t - p1_b
+    height = z_vec.Length
+    if height < 1e-4: return None
+    z_vec.Unitize()
+
+    x_vec = p2_b - p1_b
+    width = x_vec.Length
+    if width < 1e-4: return None
+    x_vec.Unitize()
+
+    y_vec = rg.Vector3d.CrossProduct(z_vec, x_vec)
+    if y_vec.Length < 1e-4: return None
+    y_vec.Unitize()
+
+    base_plane = rg.Plane(p1_b, x_vec, y_vec)
+    return base_plane, width, height
+
+
+def get_second_vertical_curve():
+    go2 = Rhino.Input.Custom.GetObject()
+    go2.SetCommandPrompt("두 번째 수직 모서리를 선택하세요.")
+    go2.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
+    go2.SubObjectSelect = True
+    go2.EnablePreSelect(False, True)
+
+    rc = go2.Get()
+    if rc != Rhino.Input.GetResult.Object: return None
+    return get_curve_from_objref(go2.Object(0))
+
+
+def bake_swing_door(dlg, door_id):
+    frames = []
+    panels = []
+    glasses = []
+    hardwares = []
+
+    for name, brep in dlg.GenerateGeometry():
+        if name == "frame": frames.append(brep)
+        elif name == "panel": panels.append(brep)
+        elif name == "glass": glasses.append(brep)
+        elif name == "hardware": hardwares.append(brep)
+
+    final_objs = []
+
+    layer_frame = "Door_frame"
+    layer_glass = "Door_glass"
+    layer_hw = "Door_hardware"
+
+    if not rs.IsLayer(layer_frame): rs.AddLayer(layer_frame, System.Drawing.Color.Indigo)
+    if not rs.IsLayer(layer_glass): rs.AddLayer(layer_glass, System.Drawing.Color.LightSkyBlue)
+    if not rs.IsLayer(layer_hw): rs.AddLayer(layer_hw, System.Drawing.Color.DarkGray)
+
+    settings = dlg.GetCurrentSettings()
+
+    if frames:
+        union_frames = rg.Brep.CreateBooleanUnion(frames, Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance)
+        if union_frames:
+            for b in union_frames:
+                obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(b)
+                if obj_id:
+                    rs.ObjectLayer(obj_id, layer_frame)
+                    save_swing_metadata(obj_id, door_id, "frame", dlg.base_plane, dlg.width, dlg.height, settings)
+                    final_objs.append(obj_id)
+        else:
+            for b in frames:
+                obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(b)
+                if obj_id:
+                    rs.ObjectLayer(obj_id, layer_frame)
+                    save_swing_metadata(obj_id, door_id, "frame", dlg.base_plane, dlg.width, dlg.height, settings)
+                    final_objs.append(obj_id)
+
+    for p in panels:
+        obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(p)
+        if obj_id:
+            rs.ObjectLayer(obj_id, layer_frame)
+            save_swing_metadata(obj_id, door_id, "panel", dlg.base_plane, dlg.width, dlg.height, settings)
+            final_objs.append(obj_id)
+
+    for g in glasses:
+        obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(g)
+        if obj_id:
+            rs.ObjectLayer(obj_id, layer_glass)
+            save_swing_metadata(obj_id, door_id, "glass", dlg.base_plane, dlg.width, dlg.height, settings)
+            final_objs.append(obj_id)
+
+    for hw in hardwares:
+        obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(hw)
+        if obj_id:
+            rs.ObjectLayer(obj_id, layer_hw)
+            save_swing_metadata(obj_id, door_id, "hardware", dlg.base_plane, dlg.width, dlg.height, settings)
+            final_objs.append(obj_id)
+
+    if final_objs:
+        group_name = rs.AddGroup()
+        rs.AddObjectsToGroup(final_objs, group_name)
+
+    return final_objs
+
+
 def get_3pt_rectangle_custom():
     gp1 = Rhino.Input.Custom.GetPoint()
     gp1.SetCommandPrompt("첫 번째 코너를 지정하세요 (시작점)")
@@ -426,117 +758,116 @@ def get_3pt_rectangle_custom():
     base_plane = rg.Plane(p1, x_dir, y_dir)
     return base_plane, width, height
 
-def main():
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("개구부의 두 수직 모서리를 선택하세요.")
-    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
-    go.SubObjectSelect = True
-    
-    opt_rect_idx = go.AddOption("Rectangle")
-    base_plane = None
-    width = 0.0
-    height = 0.0
-
+def get_input_context():
     while True:
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt("수정할 여닫이문 객체 또는 신규 생성을 위한 수직 모서리를 선택하세요.")
+        go.GeometryFilter = Rhino.DocObjects.ObjectType.AnyObject | Rhino.DocObjects.ObjectType.EdgeFilter
+        go.SubObjectSelect = True
+        go.EnablePreSelect(False, True)
+
+        opt_rect_idx = go.AddOption("Rectangle")
         get_rc = go.GetMultiple(1, 2)
-        if get_rc == Rhino.Input.GetResult.Cancel: return
-            
+
+        if get_rc == Rhino.Input.GetResult.Cancel:
+            return None
+
         if get_rc == Rhino.Input.GetResult.Option:
             if go.Option().Index == opt_rect_idx:
                 result = get_3pt_rectangle_custom()
                 if result:
                     base_plane, width, height = result
-                    break
-                else: return 
-                    
-        elif get_rc == Rhino.Input.GetResult.Object:
-            if go.ObjectCount == 2:
-                crv1, crv2 = go.Object(0).Curve(), go.Object(1).Curve()
-                def get_b(c): return c.PointAtEnd if c.PointAtStart.Z > c.PointAtEnd.Z else c.PointAtStart
-                p1_b, p2_b = get_b(crv1), get_b(crv2)
-                
-                if p1_b.X > p2_b.X or (abs(p1_b.X - p2_b.X) < 1e-4 and p1_b.Y > p2_b.Y): 
-                    p1_b, p2_b = p2_b, p1_b
-                
-                origin = p1_b
-                z_vec = crv1.PointAtEnd - crv1.PointAtStart if crv1.PointAtStart.Z < crv1.PointAtEnd.Z else crv1.PointAtStart - crv1.PointAtEnd
-                height = z_vec.Length
-                z_vec.Unitize()
-                
-                x_vec = p2_b - p1_b
-                width = x_vec.Length
-                x_vec.Unitize()
-                
-                base_plane = rg.Plane(origin, x_vec, rg.Vector3d.CrossProduct(z_vec, x_vec))
-                break
-            else:
-                rs.MessageBox("두 개의 모서리를 모두 선택해야 합니다.", 0, "선택 오류")
-                go.ClearObjects()
-                continue
-
-    if base_plane is not None and width > 0 and height > 0:
-        dlg = SwingDoorDialog(base_plane, width, height)
-        if Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow):
-            rs.EnableRedraw(False)
-            
-            frames = []
-            panels = []
-            glasses = []
-            hardwares = []
-            
-            for name, brep in dlg.GenerateGeometry():
-                if name == "frame": frames.append(brep)
-                elif name == "panel": panels.append(brep)
-                elif name == "glass": glasses.append(brep)
-                elif name == "hardware": hardwares.append(brep)
-                
-            final_objs = []
-            
-            layer_frame = "Door_frame"
-            layer_glass = "Door_glass"
-            layer_hw = "Door_hardware"
-            
-            if not rs.IsLayer(layer_frame): rs.AddLayer(layer_frame, System.Drawing.Color.Indigo)
-            if not rs.IsLayer(layer_glass): rs.AddLayer(layer_glass, System.Drawing.Color.LightSkyBlue)
-            if not rs.IsLayer(layer_hw): rs.AddLayer(layer_hw, System.Drawing.Color.DarkGray)
-            
-            if frames:
-                union_frames = rg.Brep.CreateBooleanUnion(frames, Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance)
-                if union_frames:
-                    for b in union_frames: 
-                        obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(b)
-                        if obj_id:
-                            rs.ObjectLayer(obj_id, layer_frame)
-                            final_objs.append(obj_id)
+                    return {
+                        "mode": "new",
+                        "door_id": None,
+                        "base_plane": base_plane,
+                        "width": width,
+                        "height": height,
+                        "settings": None
+                    }
                 else:
-                    for b in frames: 
-                        obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(b)
-                        if obj_id:
-                            rs.ObjectLayer(obj_id, layer_frame)
-                            final_objs.append(obj_id)
-            
-            for p in panels:
-                obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(p)
-                if obj_id:
-                    rs.ObjectLayer(obj_id, layer_frame)
-                    final_objs.append(obj_id)
-                
-            for g in glasses:
-                obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(g)
-                if obj_id:
-                    rs.ObjectLayer(obj_id, layer_glass)
-                    final_objs.append(obj_id)
-                    
-            for hw in hardwares:
-                obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddBrep(hw)
-                if obj_id:
-                    rs.ObjectLayer(obj_id, layer_hw)
-                    final_objs.append(obj_id)
-                
-            if final_objs:
-                group_name = rs.AddGroup()
-                rs.AddObjectsToGroup(final_objs, group_name)
-                
+                    return None
+
+        elif get_rc == Rhino.Input.GetResult.Object:
+            # 1개든 2개든, 선택 객체 중 수정 가능한 여닫이문 데이터가 있으면 수정 모드 우선
+            for i in range(go.ObjectCount):
+                data = load_swing_data_from_objref(go.Object(i))
+                if data:
+                    return data
+
+            # 수정 객체가 아니면 신규 생성용 수직 모서리로 해석
+            if go.ObjectCount == 2:
+                crv1 = get_curve_from_objref(go.Object(0))
+                crv2 = get_curve_from_objref(go.Object(1))
+                result = process_two_curves(crv1, crv2)
+                if result:
+                    base_plane, width, height = result
+                    return {
+                        "mode": "new",
+                        "door_id": None,
+                        "base_plane": base_plane,
+                        "width": width,
+                        "height": height,
+                        "settings": None
+                    }
+
+            elif go.ObjectCount == 1:
+                crv1 = get_curve_from_objref(go.Object(0))
+                if crv1:
+                    crv2 = get_second_vertical_curve()
+                    result = process_two_curves(crv1, crv2)
+                    if result:
+                        base_plane, width, height = result
+                        return {
+                            "mode": "new",
+                            "door_id": None,
+                            "base_plane": base_plane,
+                            "width": width,
+                            "height": height,
+                            "settings": None
+                        }
+                    else:
+                        return None
+
+            rs.MessageBox(
+                "선택한 객체는 수정 가능한 여닫이문이 아닙니다.\n\n"
+                "수정하려면 이 스크립트로 생성된 여닫이문 객체를 선택하세요.\n"
+                "새로 만들려면 두 개의 수직 모서리 또는 Rectangle 옵션을 사용하세요.",
+                0,
+                "선택 오류"
+            )
+            rs.UnselectAllObjects()
+            go.ClearObjects()
+            continue
+
+
+def main():
+    input_data = get_input_context()
+    if not input_data: return
+
+    base_plane = input_data["base_plane"]
+    width = input_data["width"]
+    height = input_data["height"]
+    edit_mode = (input_data["mode"] == "edit")
+    initial_settings = input_data["settings"]
+    door_id = input_data["door_id"]
+
+    if base_plane is None or width <= 0 or height <= 0:
+        return
+
+    dlg = SwingDoorDialog(base_plane, width, height, initial_settings, edit_mode)
+    if Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow):
+        rs.EnableRedraw(False)
+        try:
+            if edit_mode and door_id:
+                old_ids = get_swing_object_ids(door_id)
+                if old_ids:
+                    rs.DeleteObjects(old_ids)
+            else:
+                door_id = System.Guid.NewGuid().ToString()
+
+            bake_swing_door(dlg, door_id)
+        finally:
             rs.EnableRedraw(True)
             Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
