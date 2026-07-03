@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import rhinoscriptsyntax as rs
 import Rhino
 import Rhino.Geometry as rg
 import Rhino.Display as rd

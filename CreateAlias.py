@@ -5,10 +5,10 @@ import rhinoscriptsyntax as rs
 # 🛠️ [세팅값] 여기에 원하는 단축어와 실행할 매크로/스크립트 경로를 입력하세요.
 # ==============================================================================
 SHORTCUT_SETTINGS = {
-    "Stair": '! _-RunPythonScript "Elephant/Stair.py"',
-    "Arrow": '! _-RunPythonScript "Elephant/Arrow.py"',
-    "Cross": '! _-RunPythonScript "Elephant/Cross.py"',
-    "Tree": '! _-RunPythonScript "Elephant/ArrayTree.py"',
+    "Stair": '! _-RunPythonScript "Elephant/Stair"',
+    "Arrow": '! _-RunPythonScript "Elephant/Arrow"',
+    "Cross": '! _-RunPythonScript "Elephant/Cross"',
+    "Tree": '! _-RunPythonScript "Elephant/ArrayTree"',
     "AA": '! _-RunPythonScript "Elephant/ArrayBetween"',
     "Lane": '! _-RunPythonScript "Elephant/Lane"',
     "Swing": '! _-RunPythonScript "Elephant/Swing"',
