@@ -1,0 +1,17 @@
+# Local agent/tool metadata
+.agents/
+
+# Development/conversion helpers
+tools/
+
+# Excluded Rhino custom script assets
+RhinoCustonScript/
+RhinoCustomScript/
+
+# Generated toolbar candidates and backups
+ElephantToolsR7.generated.rui
+ElephantToolsR7.generated.rui_bak
+ElephantToolsR7.generated.rui.rui_bak
+
+# Rhino model backups
+Source.3dmbak
