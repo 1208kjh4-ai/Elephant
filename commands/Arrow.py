@@ -12,7 +12,8 @@ import math
 
 # --- [경로 및 설정] ---
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-ICON_DIR = os.path.join(SCRIPT_DIR, "icons")
+ELEPHANT_DIR = os.path.dirname(SCRIPT_DIR)
+ICON_DIR = os.path.join(ELEPHANT_DIR, "icons")
 IMG_ARROW = "arrow.png"
 IMG_SYMBOL = "symbol.png"
 IMG_TEXT = "text.png"

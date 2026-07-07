@@ -18,7 +18,12 @@ Requirement:
 
 import os
 import re
+import sys
 import traceback
+
+ELEPHANT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if ELEPHANT_DIR not in sys.path:
+    sys.path.insert(0, ELEPHANT_DIR)
 
 import Rhino
 import Rhino.Geometry as rg
@@ -872,7 +877,7 @@ def try_read_shapefile(path):
     if shapefile is None:
         rs.MessageBox(
             "shapefile.py 모듈을 찾을 수 없습니다.\n"
-            "pyshp의 shapefile.py를 Rhino Scripts 폴더에 넣어주세요.",
+            "shapefile.py가 Elephant 폴더 바로 아래에 있는지 확인해주세요.",
             0,
             "SHP Importer"
         )

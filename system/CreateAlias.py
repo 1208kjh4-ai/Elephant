@@ -1,37 +1,37 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import rhinoscriptsyntax as rs
 
 # ==============================================================================
 # 🛠️ [세팅값] 여기에 원하는 단축어와 실행할 매크로/스크립트 경로를 입력하세요.
 # ==============================================================================
 SHORTCUT_SETTINGS = {
-    "Stair": '! _-RunPythonScript "Elephant/Stair"',
-    "Arrow": '! _-RunPythonScript "Elephant/Arrow"',
-    "Cross": '! _-RunPythonScript "Elephant/Cross"',
-    "Tree": '! _-RunPythonScript "Elephant/ArrayTree"',
-    "AA": '! _-RunPythonScript "Elephant/ArrayBetween"',
-    "Lane": '! _-RunPythonScript "Elephant/Lane"',
-    "Swing": '! _-RunPythonScript "Elephant/Swing"',
-    "Sliding": '! _-RunPythonScript "Elephant/Sliding"',
-    "Folding": '! _-RunPythonScript "Elephant/Folding"',
-    "Spinning": '! _-RunPythonScript "Elephant/Spinning"',
-    "Curtainwall": '! _-RunPythonScript "Elephant/Curtainwall"',
-    "Handrail": '! _-RunPythonScript "Elephant/Handrail"',
-    "SpiralStair": '! _-RunPythonScript "Elephant/SpiralStair"',
-    "SpaceTruss": '! _-RunPythonScript "Elephant/SpaceTruss"',
-    "3DTruss": '! _-RunPythonScript "Elephant/3DTruss"',
-    "Hbeam": '! _-RunPythonScript "Elephant/Hbeam"',
-    "Truss": '! _-RunPythonScript "Elephant/Truss"',
-    "Drop2Srf": '! _-RunPythonScript "Elephant/Drop2Srf"',
-    "MZ": '! _-RunPythonScript "Elephant/MZ"',
-    "DDZ": '! _-RunPythonScript "Elephant/DDZ"',
-    "Building": '! _-RunPythonScript "Elephant/BakeB"',
-    "Parapet": '! _-RunPythonScript "Elephant/Parapet"',
-    "CHP": '! _-RunPythonScript "Elephant/CHP"',
-    "AZ": '! _-RunPythonScript "Elephant/AZ"',
-    "CreateContour": '! _-RunPythonScript "Elephant/CreateContour"',
-    "ApplyRoad": '! _-RunPythonScript "Elephant/ApplyRoad"',
-    "SHP": '! _-RunPythonScript "Elephant/SHPimport"'
+    "Stair": '! _-RunPythonScript "Elephant/commands/Stair"',
+    "Arrow": '! _-RunPythonScript "Elephant/commands/Arrow"',
+    "Cross": '! _-RunPythonScript "Elephant/commands/Cross"',
+    "Tree": '! _-RunPythonScript "Elephant/commands/ArrayTree"',
+    "AA": '! _-RunPythonScript "Elephant/commands/ArrayBetween"',
+    "Lane": '! _-RunPythonScript "Elephant/commands/Lane"',
+    "Swing": '! _-RunPythonScript "Elephant/commands/Swing"',
+    "Sliding": '! _-RunPythonScript "Elephant/commands/Sliding"',
+    "Folding": '! _-RunPythonScript "Elephant/commands/Folding"',
+    "Spinning": '! _-RunPythonScript "Elephant/commands/Spinning"',
+    "Curtainwall": '! _-RunPythonScript "Elephant/commands/CurtainWall"',
+    "Handrail": '! _-RunPythonScript "Elephant/commands/Handrail"',
+    "SpiralStair": '! _-RunPythonScript "Elephant/commands/SpiralStair"',
+    "SpaceTruss": '! _-RunPythonScript "Elephant/commands/SpaceTruss"',
+    "3DTruss": '! _-RunPythonScript "Elephant/commands/3DTruss"',
+    "Hbeam": '! _-RunPythonScript "Elephant/commands/Hbeam"',
+    "Truss": '! _-RunPythonScript "Elephant/commands/Truss"',
+    "Drop2Srf": '! _-RunPythonScript "Elephant/commands/Drop2Srf"',
+    "MZ": '! _-RunPythonScript "Elephant/commands/MZ"',
+    "DDZ": '! _-RunPythonScript "Elephant/commands/DDZ"',
+    "Building": '! _-RunPythonScript "Elephant/commands/BakeB"',
+    "Parapet": '! _-RunPythonScript "Elephant/commands/Parapet"',
+    "CHP": '! _-RunPythonScript "Elephant/commands/CHP"',
+    "AZ": '! _-RunPythonScript "Elephant/commands/AZ"',
+    "CreateContour": '! _-RunPythonScript "Elephant/commands/CreateContour"',
+    "ApplyRoad": '! _-RunPythonScript "Elephant/commands/ApplyRoad"',
+    "SHP": '! _-RunPythonScript "Elephant/commands/SHPimport"'
 }
 
 # ==============================================================================
@@ -72,3 +72,4 @@ def setup_aliases():
 
 if __name__ == "__main__":
     setup_aliases()
+

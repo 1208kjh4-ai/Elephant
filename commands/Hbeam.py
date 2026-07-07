@@ -806,8 +806,10 @@ class SteelConverterDialog(forms.Form):
         
         try:
             self.script_dir = os.path.dirname(os.path.realpath(__file__))
+            self.elephant_dir = os.path.dirname(self.script_dir)
         except NameError:
             self.script_dir = None
+            self.elephant_dir = None
         
         self.gizmo_radius_factor = 0.04
         self.gizmo_height_factor = 1.0   
@@ -1140,7 +1142,7 @@ class SteelConverterDialog(forms.Form):
         
         sel_val = self.dd_profile.SelectedValue
         file_name = file_map.get(sel_val, "")
-        img_path = os.path.join(self.script_dir, "icons", file_name)
+        img_path = os.path.join(self.elephant_dir or self.script_dir, "icons", file_name)
         
         if os.path.exists(img_path):
             try:

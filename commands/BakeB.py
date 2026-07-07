@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import os
+import sys
 import rhinoscriptsyntax as rs
 import Rhino
 import Rhino.Geometry as rg
@@ -10,10 +12,14 @@ import random
 import Eto.Forms as forms
 import Eto.Drawing as drawing
 
+ELEPHANT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if ELEPHANT_DIR not in sys.path:
+    sys.path.insert(0, ELEPHANT_DIR)
+
 try:
     import shapefile
 except ImportError:
-    rs.MessageBox(u"shapefile.py 모듈을 찾을 수 없습니다.\n해당 파일을 라이노 scripts 폴더에 넣어주세요.")
+    rs.MessageBox(u"shapefile.py 모듈을 찾을 수 없습니다.\nshapefile.py가 Elephant 폴더 바로 아래에 있는지 확인해주세요.")
     shapefile = None
 
 # -------------------------------------------------------------------------

@@ -1,8 +1,12 @@
 # Local agent/tool metadata
 .agents/
 
+# Python cache
+__pycache__/
+
 # Development/conversion helpers
 tools/
+Shapefile확인용/
 
 # Excluded Rhino custom script assets
 RhinoCustonScript/

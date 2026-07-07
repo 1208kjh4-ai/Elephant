@@ -17,7 +17,8 @@ import math
 # ==============================================================================
 def load_tree_library(file_name):
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    file_path = os.path.join(script_dir, file_name)
+    elephant_dir = os.path.dirname(script_dir)
+    file_path = os.path.join(elephant_dir, file_name)
     if not os.path.exists(file_path): return None
 
     f3dm = Rhino.FileIO.File3dm.Read(file_path)

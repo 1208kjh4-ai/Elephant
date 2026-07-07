@@ -3,6 +3,11 @@ from __future__ import print_function
 
 import os
 import re
+import sys
+
+ELEPHANT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if ELEPHANT_DIR not in sys.path:
+    sys.path.insert(0, ELEPHANT_DIR)
 
 import rhinoscriptsyntax as rs
 import Rhino
@@ -17,7 +22,7 @@ import Eto.Drawing as drawing
 try:
     import shapefile
 except ImportError:
-    rs.MessageBox(u"shapefile.py 모듈을 찾을 수 없습니다.\npyshp의 shapefile.py를 Rhino Scripts 폴더에 넣어주세요.")
+    rs.MessageBox(u"shapefile.py 모듈을 찾을 수 없습니다.\nshapefile.py가 Elephant 폴더 바로 아래에 있는지 확인해주세요.")
     shapefile = None
 
 try:
