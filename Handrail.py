@@ -7,6 +7,9 @@ import Eto.Forms as forms
 import Eto.Drawing as drawing
 import System
 import math
+import os
+import json
+import codecs
 
 # ==============================================================================
 # Editable Railing metadata keys
@@ -29,6 +32,57 @@ SETTING_KEYS = [
     "RLG_BarQty",
     "RLG_Handrail"
 ]
+
+
+PRESET_FOLDER_NAME = "ElephantTools"
+PRESET_FILE_NAME = "RailingPresets.json"
+
+
+def get_preset_file_path():
+    """Return the per-user preset JSON path. Stored outside the script file so updates do not erase presets."""
+    base_dir = os.environ.get("APPDATA", "")
+    if not base_dir:
+        try:
+            base_dir = os.path.expanduser("~")
+        except:
+            base_dir = ""
+    preset_dir = os.path.join(base_dir, PRESET_FOLDER_NAME) if base_dir else PRESET_FOLDER_NAME
+    return os.path.join(preset_dir, PRESET_FILE_NAME)
+
+
+def load_railing_presets():
+    path = get_preset_file_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with codecs.open(path, "r", "utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception as ex:
+        print("난간 프리셋 불러오기 오류:", ex)
+    return {}
+
+
+def save_railing_presets(presets):
+    path = get_preset_file_path()
+    folder = os.path.dirname(path)
+    try:
+        if folder and not os.path.isdir(folder):
+            os.makedirs(folder)
+        with codecs.open(path, "w", "utf-8") as f:
+            json.dump(presets, f, ensure_ascii=False, indent=2, sort_keys=True)
+        return True
+    except Exception as ex:
+        print("난간 프리셋 저장 오류:", ex)
+        return False
+
+
+def normalize_preset_name(name):
+    try:
+        return str(name).strip()
+    except:
+        return ""
 
 # --- [0] Utility functions for editable data ---
 def safe_float(value, default):
@@ -491,6 +545,8 @@ class RailingModelessDialog(forms.Form):
         self.base_curve_id = ""
         self.base_curve_points = ""
         self.is_edit_mode = False
+
+        self.presets = load_railing_presets()
         
         self.Title = "난간 생성기"
         self.Padding = drawing.Padding(12)
@@ -506,6 +562,15 @@ class RailingModelessDialog(forms.Form):
         def_panel_type = sc.sticky.get("RLG_PanelType", 0)
         def_bar_qty = sc.sticky.get("RLG_BarQty", 5)
         def_handrail = sc.sticky.get("RLG_Handrail", 1)
+
+        self.dd_preset = forms.DropDown()
+        self.dd_preset.Width = 170
+        self.txt_preset_name = forms.TextBox()
+        self.txt_preset_name.Width = 170
+        self.btn_preset_load = forms.Button(Text="불러오기")
+        self.btn_preset_save = forms.Button(Text="저장")
+        self.btn_preset_delete = forms.Button(Text="삭제")
+        self.RefreshPresetDropdown()
 
         self.nud_height = forms.NumericStepper(Value=def_height, DecimalPlaces=0, Increment=50, MinValue=300, MaxValue=3000)
         self.nud_interval = forms.NumericStepper(Value=def_interval, DecimalPlaces=0, Increment=100, MinValue=300, MaxValue=5000)
@@ -530,6 +595,11 @@ class RailingModelessDialog(forms.Form):
         self.btn_create = forms.Button(Text="생성")
         self.btn_cancel = forms.Button(Text="취소")
 
+        self.dd_preset.SelectedIndexChanged += self.OnPresetSelectedChanged
+        self.btn_preset_load.Click += self.OnLoadPresetClick
+        self.btn_preset_save.Click += self.OnSavePresetClick
+        self.btn_preset_delete.Click += self.OnDeletePresetClick
+
         self.nud_height.ValueChanged += self.RefreshPreview
         self.btn_apply_interval.Click += self.RefreshPreview 
         self.chk_bottom_gap.CheckedChanged += self.RefreshPreview
@@ -550,6 +620,10 @@ class RailingModelessDialog(forms.Form):
 
         layout = forms.DynamicLayout()
         layout.Spacing = drawing.Size(6, 6)
+
+        layout.AddRow(forms.Label(Text="프리셋 목록:"), self.dd_preset, self.btn_preset_load)
+        layout.AddRow(forms.Label(Text="프리셋 이름:"), self.txt_preset_name, self.btn_preset_save, self.btn_preset_delete)
+        layout.AddRow(None)
         
         layout.AddRow(forms.Label(Text="난간 총 높이:"), self.nud_height)
         layout.AddRow(forms.Label(Text="기둥 간격:"), interval_layout)
@@ -568,6 +642,125 @@ class RailingModelessDialog(forms.Form):
         layout.AddRow(self.btn_create, self.btn_cancel)
 
         self.Content = layout
+
+    def RefreshPresetDropdown(self, selected_name=None):
+        names = []
+        try:
+            names = sorted([str(k) for k in self.presets.keys()], key=lambda x: x.lower())
+        except:
+            names = []
+        self.dd_preset.DataStore = names
+        if not names:
+            try:
+                self.dd_preset.SelectedIndex = -1
+            except:
+                pass
+            return
+        index = 0
+        if selected_name:
+            try:
+                index = names.index(str(selected_name))
+            except:
+                index = 0
+        self.dd_preset.SelectedIndex = index
+        try:
+            self.txt_preset_name.Text = names[index]
+        except:
+            pass
+
+    def GetSelectedPresetName(self):
+        try:
+            val = self.dd_preset.SelectedValue
+            if val is not None:
+                return normalize_preset_name(val)
+        except:
+            pass
+        try:
+            idx = self.dd_preset.SelectedIndex
+            names = list(self.dd_preset.DataStore)
+            if idx >= 0 and idx < len(names):
+                return normalize_preset_name(names[idx])
+        except:
+            pass
+        return ""
+
+    def OnPresetSelectedChanged(self, sender, e):
+        name = self.GetSelectedPresetName()
+        if name:
+            try:
+                self.txt_preset_name.Text = name
+            except:
+                pass
+
+    def OnLoadPresetClick(self, sender, e):
+        name = self.GetSelectedPresetName()
+        if not name:
+            rs.MessageBox("불러올 프리셋을 선택하세요.", 0, "프리셋")
+            return
+        preset = self.presets.get(name, None)
+        if not preset:
+            rs.MessageBox("선택한 프리셋을 찾을 수 없습니다.", 0, "프리셋")
+            self.presets = load_railing_presets()
+            self.RefreshPresetDropdown()
+            return
+        self.apply_settings(preset)
+        self.save_settings_to_sticky()
+        self.RefreshPreview(None, None)
+
+    def OnSavePresetClick(self, sender, e):
+        name = normalize_preset_name(self.txt_preset_name.Text)
+        if not name:
+            name = self.GetSelectedPresetName()
+        if not name:
+            rs.MessageBox("저장할 프리셋 이름을 입력하세요.", 0, "프리셋")
+            return
+        if name in self.presets:
+            rc = rs.MessageBox("'{0}' 프리셋이 이미 있습니다.\n현재 값으로 덮어쓰시겠습니까?".format(name), 4, "프리셋 저장")
+            if rc not in [6, "Yes", "yes", True]:
+                return
+        self.presets[name] = self.get_current_settings()
+        if save_railing_presets(self.presets):
+            self.RefreshPresetDropdown(name)
+            rs.MessageBox("프리셋이 저장되었습니다.", 0, "프리셋")
+        else:
+            rs.MessageBox("프리셋 저장에 실패했습니다.", 0, "프리셋")
+
+    def OnDeletePresetClick(self, sender, e):
+        name = self.GetSelectedPresetName()
+        if not name:
+            rs.MessageBox("삭제할 프리셋을 선택하세요.", 0, "프리셋")
+            return
+        if name not in self.presets:
+            rs.MessageBox("선택한 프리셋을 찾을 수 없습니다.", 0, "프리셋")
+            self.presets = load_railing_presets()
+            self.RefreshPresetDropdown()
+            return
+        rc = rs.MessageBox("'{0}' 프리셋을 삭제하시겠습니까?".format(name), 4, "프리셋 삭제")
+        if rc not in [6, "Yes", "yes", True]:
+            return
+        try:
+            del self.presets[name]
+        except:
+            pass
+        if save_railing_presets(self.presets):
+            self.txt_preset_name.Text = ""
+            self.RefreshPresetDropdown()
+        else:
+            rs.MessageBox("프리셋 삭제 저장에 실패했습니다.", 0, "프리셋")
+
+    def ClosePreview(self):
+        try:
+            self.conduit.UpdateGeometry([])
+        except:
+            pass
+        try:
+            self.conduit.Enabled = False
+        except:
+            pass
+        try:
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        except:
+            pass
 
     def get_current_settings(self):
         return {
@@ -659,7 +852,7 @@ class RailingModelessDialog(forms.Form):
 
     def OnCreateClick(self, sender, e):
         self.save_settings_to_sticky()
-        self.conduit.Enabled = False 
+        self.ClosePreview()
         rs.EnableRedraw(False)
         
         try:
@@ -720,11 +913,11 @@ class RailingModelessDialog(forms.Form):
 
     def OnCancelClick(self, sender, e):
         self.save_settings_to_sticky()
+        self.ClosePreview()
         self.Close()
 
     def OnFormClosed(self, sender, e):
-        self.conduit.Enabled = False
-        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        self.ClosePreview()
         try:
             if sc.sticky.get("RLG_ACTIVE_DIALOG") == self:
                 sc.sticky.Remove("RLG_ACTIVE_DIALOG")

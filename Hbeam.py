@@ -8,6 +8,8 @@ import math
 import rhinoscriptsyntax as rs
 import System
 import os
+import io
+import json
 import uuid
 
 # -------------------------------------------------------------------------
@@ -16,6 +18,104 @@ import uuid
 STEEL_KIND_KEY = "Steel_Edit_Kind"
 STEEL_ID_KEY = "Steel_Edit_ID"
 STEEL_SOURCE_ID_KEY = "Steel_Edit_SourceID"
+STEEL_PROFILE_TYPES = ["H-Beam", "C-Channel", "L-Plate", "T-Beam"]
+
+STEEL_PRESET_FOLDER_NAME = "ElephantTools"
+STEEL_PRESET_FILE_NAME = "SteelPresets.json"
+
+# -------------------------------------------------------------------------
+# 0-A. 사용자 프리셋 저장/불러오기 유틸리티
+# -------------------------------------------------------------------------
+def _get_steel_preset_file_path():
+    """Return a user-specific preset JSON path outside the script folder.
+
+    Storing presets in AppData keeps user presets safe even when this script is
+    replaced during updates or distributed again from GitHub.
+    """
+    root = None
+    try:
+        root = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData)
+    except:
+        root = None
+
+    if not root:
+        try:
+            root = os.environ.get("APPDATA", None)
+        except:
+            root = None
+
+    if not root:
+        try:
+            root = os.path.expanduser("~")
+        except:
+            root = os.getcwd()
+
+    folder = os.path.join(root, STEEL_PRESET_FOLDER_NAME)
+    try:
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+    except Exception as ex:
+        print("프리셋 폴더 생성 오류:", ex)
+
+    return os.path.join(folder, STEEL_PRESET_FILE_NAME)
+
+def _load_steel_presets():
+    path = _get_steel_preset_file_path()
+    if not os.path.exists(path):
+        return {}
+
+    try:
+        with io.open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception as ex:
+        print("프리셋 불러오기 오류:", ex)
+    return {}
+
+def _save_steel_presets(presets):
+    path = _get_steel_preset_file_path()
+    if presets is None:
+        presets = {}
+    try:
+        text = json.dumps(presets, ensure_ascii=False, indent=2, sort_keys=True)
+        with io.open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return True
+    except Exception as ex:
+        print("프리셋 저장 오류:", ex)
+        try:
+            rs.MessageBox("프리셋 파일 저장 중 오류가 발생했습니다.\n{}".format(ex), 0, "프리셋 저장 오류")
+        except:
+            pass
+        return False
+
+def _preset_optional_float(value):
+    if value in [None, "", "None"]:
+        return None
+    try:
+        value = float(value)
+        if value <= 0:
+            return None
+        return value
+    except:
+        return None
+
+def _as_text(value):
+    if value is None:
+        return ""
+    try:
+        return unicode(value)
+    except NameError:
+        try:
+            return str(value)
+        except:
+            return ""
+    except:
+        try:
+            return str(value)
+        except:
+            return ""
 
 def _guid_to_str(g):
     return str(g)
@@ -235,6 +335,203 @@ def _write_steel_settings(obj_id, steel_id, source_data, settings):
     ch = settings.get("custom_h", None)
     _set_user_text(obj_id, "Steel_CustomH", "" if ch is None else ch)
 
+
+
+# -------------------------------------------------------------------------
+# 0-1. 복사/이동/회전된 객체의 현재 Transform 보정 유틸리티
+# -------------------------------------------------------------------------
+def _profile_type_from_index(profile_index):
+    idx = _to_int(profile_index, 0)
+    if idx < 0 or idx >= len(STEEL_PROFILE_TYPES):
+        idx = 0
+    return STEEL_PROFILE_TYPES[idx]
+
+def _get_brep_vertex_points(brep):
+    pts = []
+    try:
+        for v in brep.Vertices:
+            pts.append(rg.Point3d(v.Location))
+    except:
+        pts = []
+    return pts
+
+def _select_stable_plane_indices(points):
+    """Return 3 non-collinear vertex indices from a reference Brep.
+
+    The same indices are then used on the transformed/current Brep. This works
+    for normal Rhino copy/move/rotate operations because Brep topology and
+    vertex ordering are preserved.
+    """
+    if not points or len(points) < 3:
+        return None
+
+    tol = 1e-9
+    p0_index = 0
+    p0 = points[p0_index]
+
+    p1_index = None
+    max_d = 0.0
+    for i, p in enumerate(points):
+        d = p0.DistanceTo(p)
+        if d > max_d:
+            max_d = d
+            p1_index = i
+
+    if p1_index is None or max_d <= tol:
+        return None
+
+    base_vec = points[p1_index] - p0
+    p2_index = None
+    max_area = 0.0
+    for i, p in enumerate(points):
+        if i == p0_index or i == p1_index:
+            continue
+        test_vec = p - p0
+        area_vec = rg.Vector3d.CrossProduct(base_vec, test_vec)
+        area = area_vec.Length
+        if area > max_area:
+            max_area = area
+            p2_index = i
+
+    if p2_index is None or max_area <= tol:
+        return None
+
+    return (p0_index, p1_index, p2_index)
+
+def _plane_from_points_by_indices(points, indices):
+    try:
+        p0 = points[indices[0]]
+        p1 = points[indices[1]]
+        p2 = points[indices[2]]
+        plane = rg.Plane(p0, p1, p2)
+        if plane.IsValid:
+            return plane
+    except:
+        pass
+    return None
+
+def _compute_brep_transform_by_matching_vertices(reference_brep, current_brep):
+    """Compute the rigid transform from the stored/generated Brep to the currently selected Brep.
+
+    This intentionally targets the common edit case: the generated member was
+    copied, moved, or rotated in Rhino, and then edited again. If topology does
+    not match, the function returns None instead of guessing.
+    """
+    if not reference_brep or not current_brep:
+        return None
+
+    ref_pts = _get_brep_vertex_points(reference_brep)
+    cur_pts = _get_brep_vertex_points(current_brep)
+
+    if len(ref_pts) < 3 or len(cur_pts) < 3:
+        return None
+    if len(ref_pts) != len(cur_pts):
+        return None
+
+    indices = _select_stable_plane_indices(ref_pts)
+    if not indices:
+        return None
+
+    ref_plane = _plane_from_points_by_indices(ref_pts, indices)
+    cur_plane = _plane_from_points_by_indices(cur_pts, indices)
+    if not ref_plane or not cur_plane:
+        return None
+
+    try:
+        xform = rg.Transform.PlaneToPlane(ref_plane, cur_plane)
+        if not xform.IsValid:
+            return None
+    except:
+        return None
+
+    # Sanity check. If the matching-vertex assumption is wrong, do not apply it.
+    try:
+        model_tol = sc.doc.ModelAbsoluteTolerance if sc.doc else 0.01
+    except:
+        model_tol = 0.01
+    tol = max(model_tol * 100.0, 0.001)
+
+    try:
+        max_error = 0.0
+        sample_count = min(len(ref_pts), 12)
+        for i in range(sample_count):
+            test_pt = rg.Point3d(ref_pts[i])
+            test_pt.Transform(xform)
+            err = test_pt.DistanceTo(cur_pts[i])
+            if err > max_error:
+                max_error = err
+        if max_error > tol:
+            return None
+    except:
+        return None
+
+    return xform
+
+def _transform_source_data(source_data, xform):
+    if not source_data or not xform:
+        return source_data
+
+    center = rg.Point3d(source_data.get("center", rg.Point3d.Origin))
+    center.Transform(xform)
+
+    new_axes = []
+    for vec, length in source_data.get("axes", []):
+        new_vec = rg.Vector3d(vec)
+        try:
+            new_vec.Transform(xform)
+        except:
+            pass
+        if new_vec.Length > 1e-9:
+            new_vec.Unitize()
+        new_axes.append((new_vec, float(length)))
+
+    return {"center": center, "axes": new_axes}
+
+def _get_current_source_data_for_edit(selected_id, settings):
+    """Return source_data corrected to the selected object's current transform.
+
+    Stored source_data is an absolute coordinate snapshot from the original
+    generation time. When users copy/move/rotate the result object, that stored
+    snapshot becomes stale. This function reconstructs the stored result Brep,
+    compares it with the currently selected Brep, and applies the detected
+    transform to source_data.
+    """
+    if not settings:
+        return None
+
+    source_data = settings.get("source_data", None)
+    if not source_data:
+        return None
+
+    current_brep = _get_brep_from_id(selected_id)
+    if not current_brep:
+        return source_data
+
+    p_type = _profile_type_from_index(settings.get("profile_index", 0))
+    try:
+        reference_brep, _, _ = generate_steel_member_from_source(
+            source_data,
+            p_type,
+            float(settings.get("t1", 20.0)),
+            float(settings.get("t2", 30.0)),
+            float(settings.get("r", 20.0)),
+            int(settings.get("rot_x", 0)),
+            int(settings.get("rot_y", 0)),
+            int(settings.get("rot_z", 0)),
+            settings.get("custom_length", None),
+            settings.get("custom_b", None),
+            settings.get("custom_h", None)
+        )
+    except Exception as ex:
+        print("수정 기준 형상 재생성 오류:", ex)
+        reference_brep = None
+
+    xform = _compute_brep_transform_by_matching_vertices(reference_brep, current_brep)
+    if xform:
+        return _transform_source_data(source_data, xform)
+
+    print("현재 객체의 이동/회전 Transform을 계산하지 못했습니다. 저장된 기준 데이터를 그대로 사용합니다.")
+    return source_data
 
 # -------------------------------------------------------------------------
 # 1. 기하학 엔진: 직육면체(Brep)에서 중심과 3축 길이(OBB) 완벽 추출
@@ -502,7 +799,7 @@ class SteelConverterDialog(forms.Form):
         forms.Form.__init__(self) 
         
         self.Title = "철골 생성기"
-        self.ClientSize = drawing.Size(320, 570) 
+        self.ClientSize = drawing.Size(570, 610) 
         self.Padding = drawing.Padding(10)
         self.Resizable = True
         self.Topmost = True
@@ -526,6 +823,7 @@ class SteelConverterDialog(forms.Form):
         self.edit_output_ids = []
         self.source_ids = []
         self.output_layer = None
+        self.presets = {}
         
         self.angle_x = 0
         self.angle_y = 0
@@ -584,8 +882,25 @@ class SteelConverterDialog(forms.Form):
         layout = forms.DynamicLayout()
         layout.Spacing = drawing.Size(5, 5)
 
+        layout.AddRow(forms.Label(Text="프리셋 관리:"))
+        self.dd_preset = forms.DropDown()
+        self.dd_preset.Width = 180
+        self.dd_preset.SelectedIndexChanged += self.OnPresetSelected
+        self.btn_preset_load = forms.Button(Text="불러오기")
+        self.btn_preset_load.Click += self.OnPresetLoadClick
+        layout.AddRow("프리셋:", self.dd_preset, self.btn_preset_load)
+
+        self.txt_preset_name = forms.TextBox(Text="")
+        self.txt_preset_name.Width = 180
+        self.btn_preset_save = forms.Button(Text="저장")
+        self.btn_preset_save.Click += self.OnPresetSaveClick
+        self.btn_preset_delete = forms.Button(Text="삭제")
+        self.btn_preset_delete.Click += self.OnPresetDeleteClick
+        layout.AddRow("이름:", self.txt_preset_name, self.btn_preset_save, self.btn_preset_delete)
+        layout.AddRow(None)
+
         self.dd_profile = forms.DropDown()
-        self.dd_profile.DataStore = ["H-Beam", "C-Channel", "L-Plate", "T-Beam"]
+        self.dd_profile.DataStore = STEEL_PROFILE_TYPES
         self.dd_profile.SelectedIndex = 0
         self.dd_profile.SelectedIndexChanged += self.OnUIChange
         layout.AddRow("부재 형상:", self.dd_profile)
@@ -661,6 +976,157 @@ class SteelConverterDialog(forms.Form):
         layout.AddRow(None)
         
         self.Content = layout
+        self.presets = _load_steel_presets()
+        self.RefreshPresetDropdown()
+
+    def RefreshPresetDropdown(self, selected_name=None):
+        try:
+            names = sorted([_as_text(k) for k in self.presets.keys()], key=lambda x: x.lower())
+        except:
+            names = []
+
+        try:
+            self.dd_preset.DataStore = names
+        except Exception as ex:
+            print("프리셋 드롭다운 갱신 오류:", ex)
+            return
+
+        if not names:
+            try: self.txt_preset_name.Text = ""
+            except: pass
+            return
+
+        target_index = 0
+        if selected_name is not None:
+            try:
+                target_index = names.index(_as_text(selected_name))
+            except:
+                target_index = 0
+
+        try:
+            self.dd_preset.SelectedIndex = target_index
+            self.txt_preset_name.Text = names[target_index]
+        except:
+            pass
+
+    def OnPresetSelected(self, sender, e):
+        try:
+            name = self.dd_preset.SelectedValue
+            if name is not None:
+                self.txt_preset_name.Text = _as_text(name)
+        except:
+            pass
+
+    def _selected_preset_name(self):
+        try:
+            name = self.dd_preset.SelectedValue
+            if name is not None and _as_text(name).strip() != "":
+                return _as_text(name).strip()
+        except:
+            pass
+        try:
+            name = self.txt_preset_name.Text
+            if name is not None and _as_text(name).strip() != "":
+                return _as_text(name).strip()
+        except:
+            pass
+        return None
+
+    def CollectPresetSettings(self):
+        self.custom_B = self._parse_optional_float(self.txt_custom_b.Text)
+        self.custom_H = self._parse_optional_float(self.txt_custom_h.Text)
+        return {
+            "profile_index": int(self.dd_profile.SelectedIndex),
+            "t1": float(self.num_t1.Value),
+            "t2": float(self.num_t2.Value),
+            "r": float(self.num_r.Value),
+            "rot_x": int(self.angle_x),
+            "rot_y": int(self.angle_y),
+            "rot_z": int(self.angle_z),
+            "custom_b": self.custom_B,
+            "custom_h": self.custom_H
+        }
+
+    def ApplyPresetSettings(self, preset):
+        if not preset:
+            return
+
+        try:
+            idx = int(float(preset.get("profile_index", 0)))
+        except:
+            idx = 0
+        if idx < 0 or idx >= len(STEEL_PROFILE_TYPES):
+            idx = 0
+        self.dd_profile.SelectedIndex = idx
+
+        self.num_t1.Value = float(preset.get("t1", 20.0))
+        self.num_t2.Value = float(preset.get("t2", 30.0))
+        self.num_r.Value = float(preset.get("r", 20.0))
+
+        self.angle_x = int(float(preset.get("rot_x", 0))) % 360
+        self.angle_y = int(float(preset.get("rot_y", 0))) % 360
+        self.angle_z = int(float(preset.get("rot_z", 0))) % 360
+        self.lbl_rot_x.Text = "{}도".format(self.angle_x)
+        self.lbl_rot_y.Text = "{}도".format(self.angle_y)
+        self.lbl_rot_z.Text = "{}도".format(self.angle_z)
+
+        self.custom_B = _preset_optional_float(preset.get("custom_b", None))
+        self.custom_H = _preset_optional_float(preset.get("custom_h", None))
+        self.txt_custom_b.Text = "" if self.custom_B is None else "{:.1f}".format(float(self.custom_B))
+        self.txt_custom_h.Text = "" if self.custom_H is None else "{:.1f}".format(float(self.custom_H))
+
+        # custom_length is intentionally not controlled by presets.
+        # Length depends heavily on each selected object and should remain object-specific.
+        self.UpdatePreview()
+
+    def OnPresetLoadClick(self, sender, e):
+        self.presets = _load_steel_presets()
+        name = self._selected_preset_name()
+        if not name or name not in self.presets:
+            rs.MessageBox("불러올 프리셋을 선택하세요.", 0, "프리셋 불러오기")
+            self.RefreshPresetDropdown()
+            return
+        self.ApplyPresetSettings(self.presets.get(name, {}))
+
+    def OnPresetSaveClick(self, sender, e):
+        try:
+            name = _as_text(self.txt_preset_name.Text).strip()
+        except:
+            name = ""
+
+        if not name:
+            rs.MessageBox("저장할 프리셋 이름을 입력하세요.", 0, "프리셋 저장")
+            return
+
+        self.presets = _load_steel_presets()
+        if name in self.presets:
+            rc = rs.MessageBox("'{}' 프리셋이 이미 있습니다.\n현재 값으로 덮어쓰시겠습니까?".format(name), 4 + 32, "프리셋 덮어쓰기")
+            if rc != 6:
+                return
+
+        self.presets[name] = self.CollectPresetSettings()
+        if _save_steel_presets(self.presets):
+            self.RefreshPresetDropdown(name)
+
+    def OnPresetDeleteClick(self, sender, e):
+        self.presets = _load_steel_presets()
+        name = self._selected_preset_name()
+        if not name or name not in self.presets:
+            rs.MessageBox("삭제할 프리셋을 선택하세요.", 0, "프리셋 삭제")
+            self.RefreshPresetDropdown()
+            return
+
+        rc = rs.MessageBox("'{}' 프리셋을 삭제하시겠습니까?".format(name), 4 + 48, "프리셋 삭제")
+        if rc != 6:
+            return
+
+        try:
+            del self.presets[name]
+        except:
+            pass
+
+        if _save_steel_presets(self.presets):
+            self.RefreshPresetDropdown()
 
     def UpdateProfileImage(self):
         if not self.script_dir: return 
@@ -848,13 +1314,10 @@ class SteelConverterDialog(forms.Form):
         for i, b in enumerate(self.conduit.breps):
             if not b: continue
 
-            if self.edit_mode:
-                if self.edit_settings and self.edit_settings.get("steel_id", None):
-                    steel_id = self.edit_settings.get("steel_id")
-                else:
-                    steel_id = str(uuid.uuid4())
-            else:
-                steel_id = str(uuid.uuid4())
+            # Always assign a fresh edit ID to the newly written object.
+            # Rhino copies UserText when an object is copied, so reusing steel_id
+            # can make copied members behave like one grouped edit target.
+            steel_id = str(uuid.uuid4())
 
             if i < len(self.source_data_list):
                 source_data = self.source_data_list[i]
@@ -918,10 +1381,16 @@ def _open_dialog_for_edit(selected_id):
         rs.MessageBox("편집용 기준 OBB 데이터를 찾을 수 없습니다.\n이 객체는 다시 수정할 수 없습니다.", 0, "수정 오류")
         return True
 
-    steel_id = settings.get("steel_id")
-    output_ids = _find_output_ids_by_steel_id(steel_id)
-    if not output_ids:
-        output_ids = [selected_id]
+    # The stored source_data is the original absolute-coordinate snapshot.
+    # If this object was copied/moved/rotated after creation, correct source_data
+    # to the currently selected object's transform before opening the edit dialog.
+    current_source_data = _get_current_source_data_for_edit(selected_id, settings)
+    if current_source_data:
+        settings["source_data"] = current_source_data
+
+    # Edit only the selected object. Do not collect every object with the same
+    # Steel_Edit_ID, because copied Rhino objects inherit the same UserText.
+    output_ids = [selected_id]
 
     try:
         output_layer = rs.ObjectLayer(selected_id)
@@ -929,7 +1398,7 @@ def _open_dialog_for_edit(selected_id):
         output_layer = None
 
     dialog = SteelConverterDialog()
-    dialog.SetupData([], [], edit_settings=settings, edit_output_ids=output_ids, output_layer=output_layer, source_data_list=[source_data])
+    dialog.SetupData([], [], edit_settings=settings, edit_output_ids=output_ids, output_layer=output_layer, source_data_list=[settings.get("source_data")])
     dialog.Owner = Rhino.UI.RhinoEtoApp.MainWindow
     dialog.Show()
     return True

@@ -7,6 +7,8 @@ import Eto.Forms as forms
 import Eto.Drawing as drawing
 import System
 import math
+import os
+import json
 
 # ==============================================================================
 # [0] Editable Spiral Stair metadata helpers
@@ -127,6 +129,316 @@ def _delete_objects_safe(obj_ids):
         rs.DeleteObjects(valid_ids)
 
 
+# ==============================================================================
+# [0-1] Preset / linked edit / transform helpers
+# ==============================================================================
+def _get_appdata_dir():
+    root = os.environ.get("APPDATA") or os.path.expanduser("~")
+    folder = os.path.join(root, "ElephantTools")
+    if not os.path.exists(folder):
+        try:
+            os.makedirs(folder)
+        except:
+            pass
+    return folder
+
+
+def _get_preset_path():
+    return os.path.join(_get_appdata_dir(), "SpiralStairPresets.json")
+
+
+def _load_presets():
+    path = _get_preset_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as ex:
+        print("프리셋 로드 오류:", ex)
+        return {}
+
+
+def _save_presets(presets):
+    path = _get_preset_path()
+    try:
+        with open(path, "w") as f:
+            json.dump(presets, f, indent=2, sort_keys=True)
+        return True
+    except Exception as ex:
+        print("프리셋 저장 오류:", ex)
+        return False
+
+
+def _clamp_index(value, min_value, max_value, default_value):
+    idx = _safe_int(value, default_value)
+    if idx < min_value: idx = min_value
+    if idx > max_value: idx = max_value
+    return idx
+
+
+def _duplicate_brep(brep):
+    try:
+        return brep.DuplicateBrep()
+    except:
+        try:
+            return brep.Duplicate()
+        except:
+            return None
+
+
+def _duplicate_curve(curve):
+    try:
+        return curve.DuplicateCurve()
+    except:
+        try:
+            return curve.Duplicate()
+        except:
+            return None
+
+
+def _geometry_from_object(obj_id):
+    try:
+        brep = rs.coercebrep(obj_id)
+        if brep:
+            return "brep", brep
+    except:
+        pass
+    try:
+        curve = rs.coercecurve(obj_id)
+        if curve:
+            return "curve", curve
+    except:
+        pass
+    return None, None
+
+
+def _generate_reference_parts(engine, settings):
+    if engine is None or settings is None:
+        return []
+    stair_b, hr_b, hr_c = engine.calculate_geometry(
+        has_pole=bool(settings.get("has_pole", True)),
+        r_inner=float(settings.get("r_inner", 150.0)),
+        stair_width=float(settings.get("stair_width", 1200.0)),
+        handrail_type=_safe_int(settings.get("handrail_type", 3), 3),
+        hr_height=float(settings.get("hr_height", 1500.0)),
+        stair_type=_safe_int(settings.get("stair_type", 0), 0),
+        turn_count=_safe_int(settings.get("turn_count", 0), 0),
+        is_flipped=bool(settings.get("is_flipped", False))
+    )
+    parts = []
+    for b in stair_b:
+        if b and b.IsValid: parts.append(("stair_brep", "brep", b))
+    for b in hr_b:
+        if b and b.IsValid: parts.append(("handrail_brep", "brep", b))
+    for c in hr_c:
+        if c and c.IsValid: parts.append(("handrail_curve", "curve", c))
+    return parts
+
+
+def _find_non_collinear_brep_indices(brep):
+    try:
+        pts = [v.Location for v in brep.Vertices]
+    except:
+        return None
+    n = len(pts)
+    if n < 3:
+        return None
+    for i in range(n):
+        for j in range(i + 1, n):
+            v1 = pts[j] - pts[i]
+            if v1.Length < 1e-6:
+                continue
+            for k in range(j + 1, n):
+                v2 = pts[k] - pts[i]
+                if v2.Length < 1e-6:
+                    continue
+                cross = rg.Vector3d.CrossProduct(v1, v2)
+                if cross.Length > 1e-6:
+                    return i, j, k
+    return None
+
+
+def _brep_vertex_match_error(ref_brep, cur_brep, xform):
+    try:
+        if ref_brep.Vertices.Count != cur_brep.Vertices.Count:
+            return None
+        n = ref_brep.Vertices.Count
+        if n == 0:
+            return None
+        max_dist = 0.0
+        total = 0.0
+        for i in range(n):
+            p = rg.Point3d(ref_brep.Vertices[i].Location)
+            p.Transform(xform)
+            q = cur_brep.Vertices[i].Location
+            d = p.DistanceTo(q)
+            if d > max_dist: max_dist = d
+            total += d
+        return max_dist + (total / float(n))
+    except:
+        return None
+
+
+def _compute_brep_xform(ref_brep, cur_brep):
+    try:
+        if not ref_brep or not cur_brep:
+            return None, None
+        if ref_brep.Vertices.Count != cur_brep.Vertices.Count or ref_brep.Vertices.Count < 3:
+            return None, None
+        idx = _find_non_collinear_brep_indices(ref_brep)
+        if not idx:
+            return None, None
+        i, j, k = idx
+        ref_plane = rg.Plane(ref_brep.Vertices[i].Location, ref_brep.Vertices[j].Location, ref_brep.Vertices[k].Location)
+        cur_plane = rg.Plane(cur_brep.Vertices[i].Location, cur_brep.Vertices[j].Location, cur_brep.Vertices[k].Location)
+        if not ref_plane.IsValid or not cur_plane.IsValid:
+            return None, None
+        xform = rg.Transform.PlaneToPlane(ref_plane, cur_plane)
+        err = _brep_vertex_match_error(ref_brep, cur_brep, xform)
+        if err is None:
+            return None, None
+        tol = max(sc.doc.ModelAbsoluteTolerance * 20.0, 1.0)
+        if err <= tol:
+            return xform, err
+        return None, err
+    except:
+        return None, None
+
+
+def _curve_sample_points(curve, count=7):
+    pts = []
+    try:
+        dom = curve.Domain
+        for i in range(count):
+            t = dom.T0 + (dom.T1 - dom.T0) * (i / float(count - 1))
+            pts.append(curve.PointAt(t))
+    except:
+        pass
+    return pts
+
+
+def _curve_error(ref_curve, cur_curve, xform):
+    ref_pts = _curve_sample_points(ref_curve, 9)
+    cur_pts = _curve_sample_points(cur_curve, 9)
+    if len(ref_pts) != len(cur_pts) or not ref_pts:
+        return None
+    max_dist = 0.0
+    total = 0.0
+    for p, q in zip(ref_pts, cur_pts):
+        pp = rg.Point3d(p)
+        pp.Transform(xform)
+        d = pp.DistanceTo(q)
+        if d > max_dist: max_dist = d
+        total += d
+    return max_dist + (total / float(len(ref_pts)))
+
+
+def _compute_curve_xform(ref_curve, cur_curve):
+    try:
+        ref_pts = _curve_sample_points(ref_curve, 5)
+        cur_pts = _curve_sample_points(cur_curve, 5)
+        if len(ref_pts) < 3 or len(cur_pts) < 3:
+            return None, None
+        # Prefer start, mid, end. If nearly collinear, try other samples.
+        candidate_indices = [(0, 2, 4), (0, 1, 3), (1, 2, 4)]
+        best = None
+        for i, j, k in candidate_indices:
+            ref_plane = rg.Plane(ref_pts[i], ref_pts[j], ref_pts[k])
+            cur_plane = rg.Plane(cur_pts[i], cur_pts[j], cur_pts[k])
+            if not ref_plane.IsValid or not cur_plane.IsValid:
+                continue
+            xform = rg.Transform.PlaneToPlane(ref_plane, cur_plane)
+            err = _curve_error(ref_curve, cur_curve, xform)
+            if err is None:
+                continue
+            if best is None or err < best[1]:
+                best = (xform, err)
+        if best is None:
+            return None, None
+        tol = max(sc.doc.ModelAbsoluteTolerance * 50.0, 5.0)
+        if best[1] <= tol:
+            return best[0], best[1]
+        return None, best[1]
+    except:
+        return None, None
+
+
+def _find_xform_from_parts_to_object(reference_parts, obj_id):
+    geom_type, geom = _geometry_from_object(obj_id)
+    if not geom_type or not geom:
+        return None
+    best = None
+    for name, ref_type, ref_geom in reference_parts:
+        if geom_type != ref_type:
+            continue
+        if geom_type == "brep":
+            xform, err = _compute_brep_xform(ref_geom, geom)
+        else:
+            xform, err = _compute_curve_xform(ref_geom, geom)
+        if xform is not None and err is not None:
+            if best is None or err < best[1]:
+                best = (xform, err)
+    return best[0] if best else None
+
+
+def _transform_parts(parts, xform):
+    transformed = []
+    for name, geom_type, geom in parts:
+        if geom_type == "brep":
+            dup = _duplicate_brep(geom)
+        else:
+            dup = _duplicate_curve(geom)
+        if dup:
+            dup.Transform(xform)
+            transformed.append((name, geom_type, dup))
+    return transformed
+
+
+def _get_object_group_keys(obj_id):
+    try:
+        groups = rs.ObjectGroups(obj_id)
+        if groups:
+            return list(groups)
+    except:
+        pass
+    return []
+
+
+def _collect_spiral_sets_by_group(spiral_id):
+    all_ids = _collect_spiral_object_ids(spiral_id)
+    grouped = {}
+    no_group = []
+    for obj_id in all_ids:
+        groups = _get_object_group_keys(obj_id)
+        if groups:
+            key = groups[0]
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(obj_id)
+        else:
+            no_group.append(obj_id)
+
+    sets = []
+    for key in sorted(grouped.keys()):
+        sets.append({"key": key, "object_ids": grouped[key]})
+    if no_group:
+        # Fallback: ungrouped linked objects cannot be reliably split, so keep them together.
+        sets.append({"key": "__ungrouped__", "object_ids": no_group})
+    return sets
+
+
+def _get_selected_set_key(selected_id):
+    groups = _get_object_group_keys(selected_id)
+    if groups:
+        return groups[0]
+    return "__ungrouped__"
+
+
+def _make_identity_transform():
+    return rg.Transform.Identity
+
 # --- [1] 실시간 화면 표시 엔진 ---
 class SpiralStairPreviewConduit(Rhino.Display.DisplayConduit):
     def __init__(self):
@@ -209,6 +521,40 @@ class SpiralStairEngine:
             "vec_end": _vec_to_text(self.vec_end),
             "base_angle": self.base_angle
         }
+
+    def Transformed(self, xform):
+        """Return a new engine transformed by a copy/move/rotation xform.
+        The generator assumes a vertical world-Z stair. This supports normal CAD use cases:
+        move, copy, and rotate in plan, plus vertical translation.
+        """
+        engine = SpiralStairEngine(None, None)
+        if self.center_pt is None:
+            return engine
+
+        center_xy = rg.Point3d(self.center_pt.X, self.center_pt.Y, 0.0)
+        bottom_pt = rg.Point3d(self.center_pt.X, self.center_pt.Y, self.z_bottom)
+        top_pt = rg.Point3d(self.center_pt.X, self.center_pt.Y, self.z_top)
+        center_xy.Transform(xform)
+        bottom_pt.Transform(xform)
+        top_pt.Transform(xform)
+
+        engine.center_pt = rg.Point3d(center_xy.X, center_xy.Y, 0.0)
+        engine.z_bottom = bottom_pt.Z
+        engine.z_top = top_pt.Z
+        engine.total_height = abs(engine.z_top - engine.z_bottom)
+
+        v_start = rg.Vector3d(self.vec_start)
+        v_end = rg.Vector3d(self.vec_end)
+        v_start.Transform(xform)
+        v_end.Transform(xform)
+        v_start.Z = 0.0
+        v_end.Z = 0.0
+        if v_start.Length > 1e-9: v_start.Unitize()
+        if v_end.Length > 1e-9: v_end.Unitize()
+        engine.vec_start = v_start
+        engine.vec_end = v_end
+        engine.base_angle = rg.Vector3d.VectorAngle(engine.vec_start, engine.vec_end, rg.Plane.WorldXY)
+        return engine
 
     def analyze_inputs(self):
         p1_start = rg.Point3d(self.crv1.PointAtStart.X, self.crv1.PointAtStart.Y, 0)
@@ -509,16 +855,17 @@ class SpiralStairDialog(forms.Form):
         self.conduit = SpiralStairPreviewConduit()
         self.initial_settings = {}
         self.edit_id = None
-        self.edit_object_ids = []
-        
-        self.bake_stair_breps = []
-        self.bake_hr_breps = []
-        self.bake_hr_curves = []
-        
-        self.Title = "원형 계단 수정" if self.edit_id else "원형 계단 생성기"
+        self.edit_sets = []
+        self.selected_set = None
+        self._closing_preview = False
+
+        self.Title = "원형 계단 생성기"
         self.Padding = drawing.Padding(12)
         self.Resizable = True
-        self.Topmost = True 
+        self.Topmost = True
+        self.ClientSize = drawing.Size(360, 520)
+
+        self.presets = _load_presets()
 
         def_pole = self.initial_settings.get("has_pole", sc.sticky.get("SP_Pole", True))
         def_r_inner = self.initial_settings.get("r_inner", sc.sticky.get("SP_RInner", 150))
@@ -532,20 +879,31 @@ class SpiralStairDialog(forms.Form):
         self.chk_pole = forms.CheckBox(Text="중심 기둥 생성", Checked=bool(def_pole))
         self.nud_r_inner = forms.NumericStepper(Value=float(def_r_inner), DecimalPlaces=0, Increment=50, MinValue=0, MaxValue=99999)
         self.nud_width = forms.NumericStepper(Value=float(def_width), DecimalPlaces=0, Increment=100, MinValue=300, MaxValue=99999)
-        
+
         self.cb_stair_type = forms.DropDown()
         self.cb_stair_type.DataStore = ["01. 솔리드 계단", "02. 계단 발판만"]
-        self.cb_stair_type.SelectedIndex = int(def_type)
-        
+        self.cb_stair_type.SelectedIndex = _clamp_index(def_type, 0, 1, 0)
+
         self.cb_handrail = forms.DropDown()
         self.cb_handrail.DataStore = ["없음", "가이드 라인", "솔리드 난간", "03. 철골"]
-        self.cb_handrail.SelectedIndex = int(def_handrail)
-        
+        self.cb_handrail.SelectedIndex = _clamp_index(def_handrail, 0, 3, 3)
+
         self.nud_hr_height = forms.NumericStepper(Value=float(def_hr_height), DecimalPlaces=0, Increment=50, MinValue=300, MaxValue=3000)
         self.nud_turns = forms.NumericStepper(Value=int(def_turns), DecimalPlaces=0, Increment=1, MinValue=0, MaxValue=10)
         self.chk_flip = forms.CheckBox(Text="회전 방향 뒤집기 (Flip)", Checked=bool(def_flip))
 
-        self.btn_create = forms.Button(Text="수정" if self.edit_id else "생성")
+        self.chk_update_linked = forms.CheckBox(Text="같은 ID 복사본도 함께 수정", Checked=True)
+        self.chk_update_linked.Enabled = False
+        self.lbl_linked_info = forms.Label(Text="")
+
+        self.dd_preset = forms.DropDown()
+        self.txt_preset_name = forms.TextBox()
+        self.txt_preset_name.Width = 120
+        self.btn_preset_load = forms.Button(Text="불러오기")
+        self.btn_preset_save = forms.Button(Text="저장")
+        self.btn_preset_delete = forms.Button(Text="삭제")
+
+        self.btn_create = forms.Button(Text="생성")
         self.btn_cancel = forms.Button(Text="취소")
 
         self.chk_pole.CheckedChanged += self.RefreshPreview
@@ -557,13 +915,24 @@ class SpiralStairDialog(forms.Form):
         self.nud_turns.ValueChanged += self.RefreshPreview
         self.chk_flip.CheckedChanged += self.RefreshPreview
 
+        self.btn_preset_load.Click += self.OnPresetLoad
+        self.btn_preset_save.Click += self.OnPresetSave
+        self.btn_preset_delete.Click += self.OnPresetDelete
+        self.dd_preset.SelectedIndexChanged += self.OnPresetSelectionChanged
+
         self.btn_create.Click += self.OnCreateClick
         self.btn_cancel.Click += self.OnCancelClick
         self.Closed += self.OnFormClosed
 
         layout = forms.DynamicLayout()
         layout.Spacing = drawing.Size(8, 8)
-        
+
+        preset_layout = forms.DynamicLayout(DefaultSpacing=drawing.Size(5, 5))
+        preset_layout.AddRow(forms.Label(Text="프리셋:"), self.dd_preset, self.btn_preset_load)
+        preset_layout.AddRow(forms.Label(Text="프리셋 이름:"), self.txt_preset_name, self.btn_preset_save, self.btn_preset_delete)
+        layout.AddRow(preset_layout)
+        layout.AddRow(None)
+
         layout.AddRow(self.chk_pole)
         layout.AddRow(forms.Label(Text="내부 반지름:"), self.nud_r_inner)
         layout.AddRow(forms.Label(Text="계단 폭:"), self.nud_width)
@@ -576,50 +945,129 @@ class SpiralStairDialog(forms.Form):
         layout.AddRow(forms.Label(Text="돌음 횟수 추가:"), self.nud_turns)
         layout.AddRow(self.chk_flip)
         layout.AddRow(None)
+        layout.AddRow(self.chk_update_linked)
+        layout.AddRow(self.lbl_linked_info)
+        layout.AddRow(None)
         layout.AddRow(self.btn_create, self.btn_cancel)
 
         self.Content = layout
+        self.RefreshPresetDropdown()
 
-    def apply_edit_context(self, initial_settings, edit_id, edit_object_ids):
+    def RefreshPresetDropdown(self):
+        names = sorted(self.presets.keys())
+        self.dd_preset.DataStore = names
+        if names:
+            self.dd_preset.SelectedIndex = 0
+        else:
+            self.dd_preset.SelectedIndex = -1
+
+    def _selected_preset_name(self):
+        try:
+            idx = self.dd_preset.SelectedIndex
+            names = sorted(self.presets.keys())
+            if idx >= 0 and idx < len(names):
+                return names[idx]
+        except:
+            pass
+        return None
+
+    def OnPresetSelectionChanged(self, sender, e):
+        name = self._selected_preset_name()
+        if name:
+            self.txt_preset_name.Text = name
+
+    def ApplySettingsToUI(self, settings):
+        if not settings:
+            return
+        self.chk_pole.Checked = bool(settings.get("has_pole", self.chk_pole.Checked))
+        self.nud_r_inner.Value = float(settings.get("r_inner", self.nud_r_inner.Value))
+        self.nud_width.Value = float(settings.get("stair_width", self.nud_width.Value))
+        self.cb_stair_type.SelectedIndex = _clamp_index(settings.get("stair_type", self.cb_stair_type.SelectedIndex), 0, 1, self.cb_stair_type.SelectedIndex)
+        self.cb_handrail.SelectedIndex = _clamp_index(settings.get("handrail_type", self.cb_handrail.SelectedIndex), 0, 3, self.cb_handrail.SelectedIndex)
+        self.nud_hr_height.Value = float(settings.get("hr_height", self.nud_hr_height.Value))
+        self.nud_turns.Value = _clamp_index(settings.get("turn_count", self.nud_turns.Value), 0, 10, self.nud_turns.Value)
+        self.chk_flip.Checked = bool(settings.get("is_flipped", self.chk_flip.Checked))
+        self.RefreshPreview(None, None)
+
+    def OnPresetLoad(self, sender, e):
+        name = self._selected_preset_name()
+        if not name:
+            rs.MessageBox("불러올 프리셋을 선택하세요.", 0, "프리셋")
+            return
+        settings = self.presets.get(name)
+        if not settings:
+            rs.MessageBox("선택한 프리셋 데이터를 읽을 수 없습니다.", 0, "프리셋 오류")
+            return
+        self.ApplySettingsToUI(settings)
+
+    def OnPresetSave(self, sender, e):
+        name = str(self.txt_preset_name.Text).strip()
+        if not name:
+            rs.MessageBox("프리셋 이름을 입력하세요.", 0, "프리셋")
+            return
+        if name in self.presets:
+            rc = rs.MessageBox("같은 이름의 프리셋이 이미 있습니다.\n현재 값으로 덮어쓰시겠습니까?", 4, "프리셋 덮어쓰기")
+            if rc not in [6, True]:
+                return
+        self.presets[name] = self.get_current_settings()
+        if _save_presets(self.presets):
+            self.RefreshPresetDropdown()
+            names = sorted(self.presets.keys())
+            try:
+                self.dd_preset.SelectedIndex = names.index(name)
+            except:
+                pass
+
+    def OnPresetDelete(self, sender, e):
+        name = self._selected_preset_name()
+        if not name:
+            rs.MessageBox("삭제할 프리셋을 선택하세요.", 0, "프리셋")
+            return
+        rc = rs.MessageBox("'{0}' 프리셋을 삭제하시겠습니까?".format(name), 4, "프리셋 삭제")
+        if rc not in [6, True]:
+            return
+        if name in self.presets:
+            del self.presets[name]
+        _save_presets(self.presets)
+        self.txt_preset_name.Text = ""
+        self.RefreshPresetDropdown()
+
+    def apply_edit_context(self, initial_settings, edit_id, edit_sets):
         """Apply saved metadata after creating the Eto Form.
-        This avoids passing arguments directly into forms.Form constructor,
-        which can fail in Rhino/IronPython with: takes at most 2 arguments.
+        edit_sets contains current copy sets and xforms from the selected set.
         """
         self.initial_settings = initial_settings if initial_settings else {}
         self.edit_id = edit_id
-        self.edit_object_ids = edit_object_ids if edit_object_ids else []
+        self.edit_sets = edit_sets if edit_sets else []
+        self.selected_set = None
+        for edit_set in self.edit_sets:
+            if edit_set.get("is_selected"):
+                self.selected_set = edit_set
+                break
+        if self.selected_set is None and self.edit_sets:
+            self.selected_set = self.edit_sets[0]
 
         self.Title = "원형 계단 수정" if self.edit_id else "원형 계단 생성기"
         self.btn_create.Text = "수정" if self.edit_id else "생성"
+        self.chk_update_linked.Enabled = bool(self.edit_id and len(self.edit_sets) > 1)
+        self.chk_update_linked.Checked = bool(self.edit_id and len(self.edit_sets) > 1)
+        if self.edit_id:
+            self.lbl_linked_info.Text = "감지된 복사본 세트: {0}개".format(max(1, len(self.edit_sets)))
+        else:
+            self.lbl_linked_info.Text = ""
 
-        self.chk_pole.Checked = bool(self.initial_settings.get("has_pole", self.chk_pole.Checked))
-        self.nud_r_inner.Value = float(self.initial_settings.get("r_inner", self.nud_r_inner.Value))
-        self.nud_width.Value = float(self.initial_settings.get("stair_width", self.nud_width.Value))
-
-        stair_type = _safe_int(self.initial_settings.get("stair_type", self.cb_stair_type.SelectedIndex), self.cb_stair_type.SelectedIndex)
-        if stair_type < 0: stair_type = 0
-        if stair_type > 1: stair_type = 1
-        self.cb_stair_type.SelectedIndex = stair_type
-
-        handrail_type = _safe_int(self.initial_settings.get("handrail_type", self.cb_handrail.SelectedIndex), self.cb_handrail.SelectedIndex)
-        if handrail_type < 0: handrail_type = 0
-        if handrail_type > 3: handrail_type = 3
-        self.cb_handrail.SelectedIndex = handrail_type
-
-        self.nud_hr_height.Value = float(self.initial_settings.get("hr_height", self.nud_hr_height.Value))
-        self.nud_turns.Value = int(self.initial_settings.get("turn_count", self.nud_turns.Value))
-        self.chk_flip.Checked = bool(self.initial_settings.get("is_flipped", self.chk_flip.Checked))
+        self.ApplySettingsToUI(self.initial_settings)
 
     def get_current_settings(self):
         return {
-            "has_pole": self.chk_pole.Checked,
+            "has_pole": bool(self.chk_pole.Checked),
             "r_inner": float(self.nud_r_inner.Value),
             "stair_width": float(self.nud_width.Value),
-            "stair_type": self.cb_stair_type.SelectedIndex,
-            "handrail_type": self.cb_handrail.SelectedIndex,
+            "stair_type": int(self.cb_stair_type.SelectedIndex),
+            "handrail_type": int(self.cb_handrail.SelectedIndex),
             "hr_height": float(self.nud_hr_height.Value),
             "turn_count": int(self.nud_turns.Value),
-            "is_flipped": self.chk_flip.Checked
+            "is_flipped": bool(self.chk_flip.Checked)
         }
 
     def save_settings(self):
@@ -634,11 +1082,11 @@ class SpiralStairDialog(forms.Form):
         sc.sticky["SP_Flip"] = settings["is_flipped"]
         return settings
 
-    def build_metadata(self, spiral_id, settings):
+    def build_metadata_for_engine(self, engine, spiral_id, settings):
         data = {}
         data["id"] = spiral_id
-        if self.engine:
-            data.update(self.engine.ToSavedData())
+        if engine:
+            data.update(engine.ToSavedData())
         data["has_pole"] = _bool_to_text(settings["has_pole"])
         data["r_inner"] = settings["r_inner"]
         data["stair_width"] = settings["stair_width"]
@@ -655,11 +1103,11 @@ class SpiralStairDialog(forms.Form):
         self.RefreshPreview(None, None)
 
     def RefreshPreview(self, sender, e):
-        if self.engine is None: 
+        if self.engine is None:
             return
-            
+
         self.nud_hr_height.Enabled = (self.cb_handrail.SelectedIndex == 2)
-        
+
         stair_b, hr_b, hr_c = self.engine.calculate_geometry(
             has_pole=self.chk_pole.Checked,
             r_inner=float(self.nud_r_inner.Value),
@@ -670,66 +1118,104 @@ class SpiralStairDialog(forms.Form):
             turn_count=int(self.nud_turns.Value),
             is_flipped=self.chk_flip.Checked
         )
-        
-        self.bake_stair_breps = stair_b
-        self.bake_hr_breps = hr_b
-        self.bake_hr_curves = hr_c
-        
+
         self.conduit.UpdateGeometry(stair_b + hr_b, hr_c)
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
+    def ClosePreview(self):
+        if self._closing_preview:
+            return
+        self._closing_preview = True
+        try:
+            self.conduit.UpdateGeometry([], [])
+            self.conduit.Enabled = False
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        except:
+            pass
+
+    def _ensure_layers(self):
+        layer_stair = "Stair_Spiral"
+        layer_handrail = "Railing_BaseCrv"
+        if not rs.IsLayer(layer_stair):
+            rs.AddLayer(layer_stair, System.Drawing.Color.DimGray)
+        if not rs.IsLayer(layer_handrail):
+            rs.AddLayer(layer_handrail, System.Drawing.Color.LightSlateGray)
+        return layer_stair, layer_handrail
+
+    def _bake_engine_set(self, engine, settings, spiral_id):
+        layer_stair, layer_handrail = self._ensure_layers()
+        metadata = self.build_metadata_for_engine(engine, spiral_id, settings)
+        group_name = rs.AddGroup()
+        new_object_ids = []
+        parts = _generate_reference_parts(engine, settings)
+
+        for part_name, geom_type, geom in parts:
+            obj_id = None
+            if geom_type == "brep":
+                obj_id = sc.doc.Objects.AddBrep(geom)
+            elif geom_type == "curve":
+                obj_id = sc.doc.Objects.AddCurve(geom)
+
+            if obj_id and obj_id != System.Guid.Empty:
+                if part_name == "stair_brep":
+                    rs.ObjectLayer(obj_id, layer_stair)
+                else:
+                    rs.ObjectLayer(obj_id, layer_handrail)
+                _set_user_texts(obj_id, metadata)
+                if group_name:
+                    rs.AddObjectToGroup(obj_id, group_name)
+                new_object_ids.append(obj_id)
+        return new_object_ids
+
+    def _get_target_sets_for_edit(self):
+        if not self.edit_id:
+            return []
+        if self.chk_update_linked.Checked:
+            return self.edit_sets if self.edit_sets else []
+        if self.selected_set:
+            return [self.selected_set]
+        if self.edit_sets:
+            return [self.edit_sets[0]]
+        return []
+
     def OnCreateClick(self, sender, e):
         settings = self.save_settings()
-        self.conduit.Enabled = False 
-        spiral_id = self.edit_id if self.edit_id else str(System.Guid.NewGuid())
-        metadata = self.build_metadata(spiral_id, settings)
-        new_object_ids = []
-        
+        self.ClosePreview()
+
         try:
             rs.EnableRedraw(False)
-            
-            layer_stair = "Stair_Spiral"
-            layer_handrail = "Railing_BaseCrv"
-            
-            if not rs.IsLayer(layer_stair): 
-                rs.AddLayer(layer_stair, System.Drawing.Color.DimGray)
-            if not rs.IsLayer(layer_handrail): 
-                rs.AddLayer(layer_handrail, System.Drawing.Color.LightSlateGray)
-                
-            group_name = rs.AddGroup()
-                
-            for b in self.bake_stair_breps:
-                if b and b.IsValid:
-                    obj_id = sc.doc.Objects.AddBrep(b)
-                    if obj_id and obj_id != System.Guid.Empty:
-                        rs.ObjectLayer(obj_id, layer_stair)
-                        _set_user_texts(obj_id, metadata)
-                        if group_name: rs.AddObjectToGroup(obj_id, group_name)
-                        new_object_ids.append(obj_id)
-            
-            for b in self.bake_hr_breps:
-                if b and b.IsValid:
-                    obj_id = sc.doc.Objects.AddBrep(b)
-                    if obj_id and obj_id != System.Guid.Empty:
-                        rs.ObjectLayer(obj_id, layer_handrail)
-                        _set_user_texts(obj_id, metadata)
-                        if group_name: rs.AddObjectToGroup(obj_id, group_name)
-                        new_object_ids.append(obj_id)
-                        
-            for c in self.bake_hr_curves:
-                if c and c.IsValid:
-                    obj_id = sc.doc.Objects.AddCurve(c)
-                    if obj_id and obj_id != System.Guid.Empty:
-                        rs.ObjectLayer(obj_id, layer_handrail)
-                        _set_user_texts(obj_id, metadata)
-                        if group_name: rs.AddObjectToGroup(obj_id, group_name)
-                        new_object_ids.append(obj_id)
 
-            if self.edit_id and new_object_ids:
-                _delete_objects_safe(self.edit_object_ids)
-                print("원형 계단 수정이 완료되었습니다!")
+            if self.edit_id:
+                target_sets = self._get_target_sets_for_edit()
+                if not target_sets:
+                    target_sets = [{"object_ids": [], "xform": rg.Transform.Identity, "is_selected": True}]
+
+                old_ids = []
+                for edit_set in target_sets:
+                    old_ids.extend(edit_set.get("object_ids", []))
+                _delete_objects_safe(old_ids)
+
+                # Linked edit keeps the ID. Independent edit splits the selected copy into a new family.
+                if self.chk_update_linked.Checked:
+                    target_spiral_id = self.edit_id
+                else:
+                    target_spiral_id = str(System.Guid.NewGuid())
+
+                baked_count = 0
+                for edit_set in target_sets:
+                    xform = edit_set.get("xform", rg.Transform.Identity)
+                    engine_for_set = self.engine.Transformed(xform)
+                    baked_count += len(self._bake_engine_set(engine_for_set, settings, target_spiral_id))
+
+                if self.chk_update_linked.Checked and len(target_sets) > 1:
+                    print("원형 계단 복사본 {0}개 세트가 함께 수정되었습니다.".format(len(target_sets)))
+                else:
+                    print("원형 계단 수정이 완료되었습니다!")
             else:
+                spiral_id = str(System.Guid.NewGuid())
+                self._bake_engine_set(self.engine, settings, spiral_id)
                 print("원형 계단 생성이 완료되었습니다!")
+
         except Exception as ex:
             print("Bake 처리 중 오류 발생:", ex)
         finally:
@@ -739,11 +1225,11 @@ class SpiralStairDialog(forms.Form):
 
     def OnCancelClick(self, sender, e):
         self.save_settings()
+        self.ClosePreview()
         self.Close()
 
     def OnFormClosed(self, sender, e):
-        self.conduit.Enabled = False
-        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        self.ClosePreview()
 
 
 # --- [4] 입력 및 자동 수정/신규 생성 분기 ---
@@ -758,6 +1244,83 @@ def _settings_from_saved_data(data):
         "turn_count": _safe_int(data.get("turn_count"), 0),
         "is_flipped": _text_to_bool(data.get("is_flipped"), False)
     }
+
+
+def _find_xform_for_selected_set(old_engine, old_settings, selected_id, set_ids):
+    old_parts = _generate_reference_parts(old_engine, old_settings)
+    xform = _find_xform_from_parts_to_object(old_parts, selected_id)
+    if xform is not None:
+        return xform
+
+    # If the user selected a curve or a Boolean-unioned part that does not match cleanly,
+    # try other objects in the same group/set.
+    for obj_id in set_ids:
+        xform = _find_xform_from_parts_to_object(old_parts, obj_id)
+        if xform is not None:
+            return xform
+    return rg.Transform.Identity
+
+
+def _build_edit_context(data, selected_id):
+    """Resolve current selected copy position and linked-copy transforms.
+    Returns current_engine_for_selected_set, edit_sets.
+    """
+    old_engine = SpiralStairEngine.FromSavedData(data)
+    old_settings = _settings_from_saved_data(data)
+    spiral_id = data.get("id")
+
+    all_sets = _collect_spiral_sets_by_group(spiral_id)
+    selected_key = _get_selected_set_key(selected_id)
+    selected_set_ids = []
+    for edit_set in all_sets:
+        if edit_set.get("key") == selected_key or selected_id in edit_set.get("object_ids", []):
+            selected_set_ids = edit_set.get("object_ids", [])
+            break
+    if not selected_set_ids:
+        selected_set_ids = [selected_id]
+
+    xform_old_to_selected = _find_xform_for_selected_set(old_engine, old_settings, selected_id, selected_set_ids)
+    selected_engine = old_engine.Transformed(xform_old_to_selected)
+
+    selected_reference_parts = _generate_reference_parts(selected_engine, old_settings)
+    edit_sets = []
+    has_selected = False
+
+    for edit_set in all_sets:
+        ids = edit_set.get("object_ids", [])
+        is_selected = selected_id in ids or edit_set.get("key") == selected_key
+        if is_selected:
+            edit_sets.append({
+                "key": edit_set.get("key"),
+                "object_ids": ids,
+                "xform": rg.Transform.Identity,
+                "is_selected": True
+            })
+            has_selected = True
+            continue
+
+        xform = None
+        for obj_id in ids:
+            xform = _find_xform_from_parts_to_object(selected_reference_parts, obj_id)
+            if xform is not None:
+                break
+        if xform is not None:
+            edit_sets.append({
+                "key": edit_set.get("key"),
+                "object_ids": ids,
+                "xform": xform,
+                "is_selected": False
+            })
+
+    if not has_selected:
+        edit_sets.insert(0, {
+            "key": selected_key,
+            "object_ids": selected_set_ids,
+            "xform": rg.Transform.Identity,
+            "is_selected": True
+        })
+
+    return selected_engine, edit_sets
 
 
 def _get_second_curve():
@@ -793,12 +1356,11 @@ def _get_auto_input():
             data = _load_spiral_data_from_object(obj_ref.ObjectId)
             if data:
                 spiral_id = data.get("id")
-                object_ids = _collect_spiral_object_ids(spiral_id)
                 return {
                     "mode": "edit",
                     "data": data,
                     "spiral_id": spiral_id,
-                    "object_ids": object_ids
+                    "selected_id": obj_ref.ObjectId
                 }
 
         # 2. 기존 원형 계단이 아니면 새 기준 커브 입력으로 처리
@@ -830,13 +1392,20 @@ def main():
         return
 
     if result["mode"] == "edit":
-        engine = SpiralStairEngine.FromSavedData(result["data"])
+        selected_id = result.get("selected_id")
+        try:
+            engine, edit_sets = _build_edit_context(result["data"], selected_id)
+        except Exception as ex:
+            print("수정 컨텍스트 계산 오류:", ex)
+            engine = SpiralStairEngine.FromSavedData(result["data"])
+            edit_sets = [{"object_ids": _collect_spiral_object_ids(result["spiral_id"]), "xform": rg.Transform.Identity, "is_selected": True}]
+
         if engine.center_pt is None:
             rs.MessageBox("선택한 원형 계단의 저장 정보를 읽을 수 없습니다.", 0, "수정 오류")
             return
         initial_settings = _settings_from_saved_data(result["data"])
         dlg = SpiralStairDialog()
-        dlg.apply_edit_context(initial_settings, result["spiral_id"], result["object_ids"])
+        dlg.apply_edit_context(initial_settings, result["spiral_id"], edit_sets)
     else:
         crv1 = result["curves"][0]
         crv2 = result["curves"][1]

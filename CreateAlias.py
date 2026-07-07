@@ -28,7 +28,10 @@ SHORTCUT_SETTINGS = {
     "Building": '! _-RunPythonScript "Elephant/BakeB"',
     "Parapet": '! _-RunPythonScript "Elephant/Parapet"',
     "CHP": '! _-RunPythonScript "Elephant/CHP"',
-    "AZ": '! _-RunPythonScript "Elephant/AZ"'
+    "AZ": '! _-RunPythonScript "Elephant/AZ"',
+    "CreateContour": '! _-RunPythonScript "Elephant/CreateContour"',
+    "ApplyRoad": '! _-RunPythonScript "Elephant/ApplyRoad"',
+    "SHP": '! _-RunPythonScript "Elephant/SHPimport"'
 }
 
 # ==============================================================================

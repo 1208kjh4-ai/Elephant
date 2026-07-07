@@ -1,874 +1,1137 @@
 # -*- coding: utf-8 -*-
+from __future__ import division
+
+import math
+import System
+import clr
+
+clr.AddReference("Eto")
+clr.AddReference("Rhino.UI")
+
 import Rhino
 import Rhino.Geometry as rg
-import scriptcontext as sc
+import Rhino.UI
 import Eto.Forms as forms
 import Eto.Drawing as drawing
-import math
 import rhinoscriptsyntax as rs
-import System
-import os
-import uuid
-
-# -------------------------------------------------------------------------
-# 0. 편집 기능용 메타데이터 유틸리티
-# -------------------------------------------------------------------------
-STEEL_KIND_KEY = "Steel_Edit_Kind"
-STEEL_ID_KEY = "Steel_Edit_ID"
-STEEL_SOURCE_ID_KEY = "Steel_Edit_SourceID"
-
-def _guid_to_str(g):
-    return str(g)
-
-def _set_user_text(obj_id, key, value):
-    try:
-        rs.SetUserText(obj_id, key, str(value))
-    except Exception as ex:
-        print("UserText 저장 오류:", ex)
-
-def _get_user_text(obj_id, key, default=None):
-    try:
-        val = rs.GetUserText(obj_id, key)
-        return val if val is not None else default
-    except:
-        return default
-
-def _to_bool(value, default=False):
-    if value is None: return default
-    return str(value).lower() in ["true", "1", "yes", "y"]
-
-def _to_int(value, default=0):
-    try: return int(float(value))
-    except: return default
-
-def _to_float(value, default=0.0):
-    try: return float(value)
-    except: return default
-
-def _get_doc_object(obj_id):
-    try:
-        return sc.doc.Objects.Find(System.Guid(str(obj_id)))
-    except:
-        try:
-            return sc.doc.Objects.Find(obj_id)
-        except:
-            return None
-
-def _get_brep_from_id(obj_id):
-    try:
-        return rs.coercebrep(System.Guid(str(obj_id)))
-    except:
-        try:
-            return rs.coercebrep(obj_id)
-        except:
-            return None
-
-def _ensure_layer(layer_name, color=None, visible=True):
-    if not rs.IsLayer(layer_name):
-        if color: rs.AddLayer(layer_name, color)
-        else: rs.AddLayer(layer_name)
-    try: rs.LayerVisible(layer_name, visible)
-    except: pass
-
-def _make_hidden_source_copy(source_brep, steel_id):
-    layer_name = "Steel_EditSource"
-    _ensure_layer(layer_name, System.Drawing.Color.DarkGray, False)
-    dup = source_brep.DuplicateBrep() if hasattr(source_brep, "DuplicateBrep") else source_brep.Duplicate()
-    src_id = sc.doc.Objects.AddBrep(dup)
-    if src_id and src_id != System.Guid.Empty:
-        try: rs.ObjectLayer(src_id, layer_name)
-        except: pass
-        _set_user_text(src_id, STEEL_KIND_KEY, "source")
-        _set_user_text(src_id, STEEL_ID_KEY, steel_id)
-        try: sc.doc.Objects.Hide(src_id, True)
-        except: pass
-        return src_id
-    return None
-
-def _find_output_ids_by_steel_id(steel_id):
-    ids = []
-    try:
-        all_ids = rs.AllObjects(False) or []
-    except:
-        all_ids = []
-    for oid in all_ids:
-        if _get_user_text(oid, STEEL_KIND_KEY) == "output" and _get_user_text(oid, STEEL_ID_KEY) == steel_id:
-            ids.append(oid)
-    return ids
-
-def _read_steel_settings(obj_id):
-    if _get_user_text(obj_id, STEEL_KIND_KEY) != "output":
-        return None
-    steel_id = _get_user_text(obj_id, STEEL_ID_KEY)
-    source_id = _get_user_text(obj_id, STEEL_SOURCE_ID_KEY)
-    if not steel_id or not source_id:
-        return None
-    settings = {
-        "steel_id": steel_id,
-        "source_id": source_id,
-        "profile_index": _to_int(_get_user_text(obj_id, "Steel_ProfileIndex"), 0),
-        "t1": _to_float(_get_user_text(obj_id, "Steel_t1"), 20.0),
-        "t2": _to_float(_get_user_text(obj_id, "Steel_t2"), 30.0),
-        "r": _to_float(_get_user_text(obj_id, "Steel_r"), 20.0),
-        "rot_x": _to_int(_get_user_text(obj_id, "Steel_RotX"), 0),
-        "rot_y": _to_int(_get_user_text(obj_id, "Steel_RotY"), 0),
-        "rot_z": _to_int(_get_user_text(obj_id, "Steel_RotZ"), 0),
-        "custom_length": _get_user_text(obj_id, "Steel_CustomLength"),
-        "custom_b": _get_user_text(obj_id, "Steel_CustomB"),
-        "custom_h": _get_user_text(obj_id, "Steel_CustomH")
-    }
-    if settings["custom_length"] in [None, "", "None"]:
-        settings["custom_length"] = None
-    else:
-        settings["custom_length"] = _to_float(settings["custom_length"], None)
-
-    if settings["custom_b"] in [None, "", "None"]:
-        settings["custom_b"] = None
-    else:
-        settings["custom_b"] = _to_float(settings["custom_b"], None)
-
-    if settings["custom_h"] in [None, "", "None"]:
-        settings["custom_h"] = None
-    else:
-        settings["custom_h"] = _to_float(settings["custom_h"], None)
-    return settings
-
-def _write_steel_settings(obj_id, steel_id, source_id, settings):
-    _set_user_text(obj_id, STEEL_KIND_KEY, "output")
-    _set_user_text(obj_id, STEEL_ID_KEY, steel_id)
-    _set_user_text(obj_id, STEEL_SOURCE_ID_KEY, _guid_to_str(source_id))
-    _set_user_text(obj_id, "Steel_ProfileIndex", settings.get("profile_index", 0))
-    _set_user_text(obj_id, "Steel_t1", settings.get("t1", 20.0))
-    _set_user_text(obj_id, "Steel_t2", settings.get("t2", 30.0))
-    _set_user_text(obj_id, "Steel_r", settings.get("r", 20.0))
-    _set_user_text(obj_id, "Steel_RotX", settings.get("rot_x", 0))
-    _set_user_text(obj_id, "Steel_RotY", settings.get("rot_y", 0))
-    _set_user_text(obj_id, "Steel_RotZ", settings.get("rot_z", 0))
-    cl = settings.get("custom_length", None)
-    _set_user_text(obj_id, "Steel_CustomLength", "" if cl is None else cl)
-    cb = settings.get("custom_b", None)
-    _set_user_text(obj_id, "Steel_CustomB", "" if cb is None else cb)
-    ch = settings.get("custom_h", None)
-    _set_user_text(obj_id, "Steel_CustomH", "" if ch is None else ch)
+import scriptcontext as sc
+import System.Drawing as SD
 
 
-# -------------------------------------------------------------------------
-# 1. 기하학 엔진: 직육면체(Brep)에서 중심과 3축 길이(OBB) 완벽 추출
-# -------------------------------------------------------------------------
-def get_obb_data(brep):
-    faces = list(brep.Faces)
-    if len(faces) != 6:
-        bbox = brep.GetBoundingBox(True)
-        center = bbox.Center
-        return center, [
-            (rg.Vector3d.XAxis, bbox.Max.X - bbox.Min.X),
-            (rg.Vector3d.YAxis, bbox.Max.Y - bbox.Min.Y),
-            (rg.Vector3d.ZAxis, bbox.Max.Z - bbox.Min.Z)
-        ]
+# ============================================================
+# Hanok Roof Generator
+# Rhino 8 / IronPython 2.7
+#
+# Features:
+# - Gable / Hipped / Hip-Gable roof
+# - Curved eaves
+# - Numerical input UI
+# - Apply Preview button
+# - Enter key applies preview
+# - Modeless Eto Form
+# ============================================================
 
-    v = brep.Vertices[0]
-    edge_indices = v.EdgeIndices()
-    edges = [brep.Edges[idx] for idx in edge_indices]
 
-    if len(edges) != 3:
-        bbox = brep.GetBoundingBox(True)
-        center = bbox.Center
-        return center, [
-            (rg.Vector3d.XAxis, bbox.Max.X - bbox.Min.X),
-            (rg.Vector3d.YAxis, bbox.Max.Y - bbox.Min.Y),
-            (rg.Vector3d.ZAxis, bbox.Max.Z - bbox.Min.Z)
-        ]
+# ============================================================
+# Basic Utilities
+# ============================================================
 
-    v_pt = v.Location
-    axes = []
-    for e in edges:
-        crv = e.ToNurbsCurve()
-        length = crv.GetLength()
-        if crv.PointAtStart.DistanceTo(v_pt) < 0.001:
-            vec = crv.TangentAtStart
+def tol():
+    return sc.doc.ModelAbsoluteTolerance
+
+
+def dot(a, b):
+    return a.X * b.X + a.Y * b.Y + a.Z * b.Z
+
+
+def unit(v):
+    vv = rg.Vector3d(v.X, v.Y, v.Z)
+    if not vv.Unitize():
+        raise Exception("Failed to unitize vector.")
+    return vv
+
+
+def avg_pts(pts):
+    x = 0.0
+    y = 0.0
+    z = 0.0
+
+    for p in pts:
+        x += p.X
+        y += p.Y
+        z += p.Z
+
+    n = float(len(pts))
+    return rg.Point3d(x / n, y / n, z / n)
+
+
+def lerp(p0, p1, t):
+    return rg.Point3d(
+        p0.X + (p1.X - p0.X) * t,
+        p0.Y + (p1.Y - p0.Y) * t,
+        p0.Z + (p1.Z - p0.Z) * t
+    )
+
+
+def clean_poly_pts(pts):
+    result = []
+    t = tol()
+
+    for p in pts:
+        pp = rg.Point3d(p)
+
+        if not result:
+            result.append(pp)
         else:
-            vec = -crv.TangentAtEnd
-        vec.Unitize()
-        axes.append((vec, length))
+            if result[-1].DistanceTo(pp) > t:
+                result.append(pp)
 
-    amp = rg.AreaMassProperties.Compute(brep)
-    center = amp.Centroid if amp else brep.GetBoundingBox(True).Center
+    if len(result) > 1:
+        if result[0].DistanceTo(result[-1]) <= t:
+            result.pop()
 
-    return center, axes
+    return result
 
-# -------------------------------------------------------------------------
-# 2. 기하학 엔진: 3차원 평면 회전, r값 연산 및 솔리드 압출
-# -------------------------------------------------------------------------
-def generate_steel_member(brep, p_type, t1, t2, r, ax, ay, az, custom_length=None, custom_B=None, custom_H=None):
-    center, axes = get_obb_data(brep)
-    
-    axes.sort(key=lambda x: x[1], reverse=True)
-    vec_z, len_z = axes[0]
-    vec_x, len_x = axes[1]
-    vec_y, len_y = axes[2]
-    
-    plane = rg.Plane(center, vec_x, vec_y)
-    if plane.ZAxis * vec_z < 0:
-        plane = rg.Plane(center, vec_y, vec_x)
-        
-    gizmo_plane = rg.Plane(plane)
-        
-    if ax != 0: plane.Rotate(math.radians(ax), gizmo_plane.XAxis, center)
-    if ay != 0: plane.Rotate(math.radians(ay), gizmo_plane.YAxis, center)
-    if az != 0: plane.Rotate(math.radians(az), gizmo_plane.ZAxis, center)
-    
-    B = H = L = 0.0
-    for vec, length in axes:
-        if abs(vec * plane.XAxis) > 0.9: B = length
-        elif abs(vec * plane.YAxis) > 0.9: H = length
-        elif abs(vec * plane.ZAxis) > 0.9: L = length
-        
-    if custom_B is not None and custom_B > 0:
-        B = custom_B
-    if custom_H is not None and custom_H > 0:
-        H = custom_H
-    if custom_length is not None and custom_length > 0:
-        L = custom_length
 
-    if B < 0.001 or H < 0.001 or L < 0.001: return None, None, None
-    
-    t1_val = min(t1, B * 0.9)
-    t2_val = min(t2, H * 0.45)
-    
-    # ---------------------------------------------------------------------
-    # r값이 형태를 파고들지 않도록 안전 한계선(Clamp) 자동 계산
-    # ---------------------------------------------------------------------
-    max_r = 0
-    if p_type == "H-Beam":
-        max_r = min((H - 2*t2_val)/2.0, (B - t1_val)/2.0)
-    elif p_type == "C-Channel":
-        max_r = min((H - 2*t2_val)/2.0, B - t1_val)
-    elif p_type == "L-Plate":
-        max_r = min(H - t2_val, B - t1_val)
-    elif p_type == "T-Beam":
-        max_r = min(H - t2_val, (B - t1_val)/2.0)
-        
-    # 버그를 막기 위해 최대 허용치의 98%까지만 허용
-    r_val = min(r, max_r * 0.98) 
-    if r_val < 0: r_val = 0
-    
-    # ---------------------------------------------------------------------
-    # 모든 프로파일은 완벽한 반시계 방향(CCW)으로 좌표점 구성
-    # ---------------------------------------------------------------------
-    pts = []
-    if p_type == "H-Beam":
-        pts = [
-            rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
-            rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(t1_val/2, -H/2 + t2_val, 0),
-            rg.Point3d(t1_val/2, H/2 - t2_val, 0), rg.Point3d(B/2, H/2 - t2_val, 0),
-            rg.Point3d(B/2, H/2, 0), rg.Point3d(-B/2, H/2, 0),
-            rg.Point3d(-B/2, H/2 - t2_val, 0), rg.Point3d(-t1_val/2, H/2 - t2_val, 0),
-            rg.Point3d(-t1_val/2, -H/2 + t2_val, 0), rg.Point3d(-B/2, -H/2 + t2_val, 0),
-            rg.Point3d(-B/2, -H/2, 0)
-        ]
-    elif p_type == "C-Channel":
-        pts = [
-            rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
-            rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(-B/2 + t1_val, -H/2 + t2_val, 0),
-            rg.Point3d(-B/2 + t1_val, H/2 - t2_val, 0), rg.Point3d(B/2, H/2 - t2_val, 0),
-            rg.Point3d(B/2, H/2, 0), rg.Point3d(-B/2, H/2, 0),
-            rg.Point3d(-B/2, -H/2, 0)
-        ]
-    elif p_type == "L-Plate":
-        pts = [
-            rg.Point3d(-B/2, -H/2, 0), rg.Point3d(B/2, -H/2, 0),
-            rg.Point3d(B/2, -H/2 + t2_val, 0), rg.Point3d(-B/2 + t1_val, -H/2 + t2_val, 0),
-            rg.Point3d(-B/2 + t1_val, H/2, 0), rg.Point3d(-B/2, H/2, 0),
-            rg.Point3d(-B/2, -H/2, 0)
-        ]
-    elif p_type == "T-Beam":
-        # T형강도 외적 연산을 위해 완벽한 CCW 순서로 재정렬
-        pts = [
-            rg.Point3d(-t1_val/2, -H/2, 0), rg.Point3d(t1_val/2, -H/2, 0),
-            rg.Point3d(t1_val/2, H/2 - t2_val, 0), rg.Point3d(B/2, H/2 - t2_val, 0),
-            rg.Point3d(B/2, H/2, 0), rg.Point3d(-B/2, H/2, 0),
-            rg.Point3d(-B/2, H/2 - t2_val, 0), rg.Point3d(-t1_val/2, H/2 - t2_val, 0),
-            rg.Point3d(-t1_val/2, -H/2, 0)
-        ]
+def ensure_layer(name, color):
+    if not rs.IsLayer(name):
+        rs.AddLayer(name, color)
 
-    curve_pts = [plane.PointAt(p.X, p.Y, 0) for p in pts]
-    
-    # ---------------------------------------------------------------------
-    # [핵심] 지능형 안쪽 모서리(Inner Corner) 추적 및 Arc 삽입 엔진
-    # ---------------------------------------------------------------------
-    if r_val <= 0.001:
-        # r값이 없으면 기존처럼 직선형 프로파일 생성
-        curve = rg.Polyline(curve_pts).ToNurbsCurve()
-    else:
-        corners = []
-        n = len(curve_pts) - 1
-        
-        for i in range(n):
-            p_curr = curve_pts[i]
-            p_prev = curve_pts[i-1]
-            p_next = curve_pts[(i+1)%n]
-            
-            v_in = p_curr - p_prev
-            v_out = p_next - p_curr
-            v_in.Unitize()
-            v_out.Unitize()
-            
-            # 벡터 외적을 통해 안쪽 코너 판별 (진행 방향 대비 우회전하는 곳)
-            cross_vec = rg.Vector3d.CrossProduct(v_in, v_out)
-            z_dot = cross_vec * plane.ZAxis
-            
-            if z_dot < -0.5: # 안쪽 모서리(Inner Corner) 감지됨!
-                p_start = p_curr - v_in * r_val
-                p_end = p_curr + v_out * r_val
-                arc = rg.Arc(p_start, v_in, p_end)
-                corners.append({'type': 'fillet', 'p_start': p_start, 'p_end': p_end, 'arc': arc})
-            else: # 바깥쪽 모서리는 직각(Sharp) 유지
-                corners.append({'type': 'sharp', 'p_start': p_curr, 'p_end': p_curr})
-                
-        polycurve = rg.PolyCurve()
-        for i in range(n):
-            c_curr = corners[i]
-            c_next = corners[(i+1)%n]
-            
-            if c_curr['type'] == 'fillet':
-                polycurve.Append(c_curr['arc'])
-                
-            line = rg.Line(c_curr['p_end'], c_next['p_start'])
-            if line.Length > 0.001:
-                polycurve.Append(line)
-                
-        if not polycurve.IsClosed:
-            polycurve.MakeClosed(0.001)
-            
-        curve = polycurve.ToNurbsCurve()
-    # ---------------------------------------------------------------------
 
-    curve.Translate(-plane.ZAxis * (L / 2))
-    srf = rg.Surface.CreateExtrusion(curve, plane.ZAxis * L)
-    
-    if srf:
-        brep_ext = srf.ToBrep()
-        cap = brep_ext.CapPlanarHoles(sc.doc.ModelAbsoluteTolerance)
-        final_brep = cap if cap else brep_ext
-        return final_brep, gizmo_plane, max(B, H) 
-    return None, None, None
-
-# -------------------------------------------------------------------------
-# 3. 프리뷰 컨두잇 (철골 부재 + 직관적인 3D 축 기즈모 렌더링)
-# -------------------------------------------------------------------------
-class SteelPreviewConduit(Rhino.Display.DisplayConduit):
-    def __init__(self):
-        self.breps = []
-        self.gizmo_breps = [] 
-        self.gizmo_texts = [] 
-        
-        self.color = System.Drawing.Color.FromArgb(180, 100, 150, 200)
-        self.material = Rhino.Display.DisplayMaterial(self.color)
-        
-        self.mat_x = Rhino.Display.DisplayMaterial(System.Drawing.Color.Red)
-        self.mat_y = Rhino.Display.DisplayMaterial(System.Drawing.Color.LimeGreen)
-        self.mat_z = Rhino.Display.DisplayMaterial(System.Drawing.Color.DodgerBlue)
-        self.mat_w = Rhino.Display.DisplayMaterial(System.Drawing.Color.White)
-        
-    def CalculateBoundingBox(self, e):
-        for b in self.breps:
-            e.IncludeBoundingBox(b.GetBoundingBox(False))
-        for gb, _ in self.gizmo_breps:
-            e.IncludeBoundingBox(gb.GetBoundingBox(False))
-            
-    def DrawForeground(self, e):
-        for b in self.breps:
-            e.Display.DrawBrepShaded(b, self.material)
-            e.Display.DrawBrepWires(b, System.Drawing.Color.Black, 1)
-
-        try: e.Display.DepthTestingEnabled = False
-        except: pass
-
-        for gb, mat in self.gizmo_breps:
-            e.Display.DrawBrepShaded(gb, mat)
-            
-        for txt, color, pt in self.gizmo_texts:
-            e.Display.Draw2dText(txt, color, pt, True, 24) 
-            
-        try: e.Display.DepthTestingEnabled = True
-        except: pass
-
-# -------------------------------------------------------------------------
-# 4. UI 및 컨트롤러 (Eto.Forms)
-# -------------------------------------------------------------------------
-class SteelConverterDialog(forms.Form):
-    def __init__(self):
-        forms.Form.__init__(self) 
-        
-        self.Title = "철골 생성기"
-        self.ClientSize = drawing.Size(320, 570) 
-        self.Padding = drawing.Padding(10)
-        self.Resizable = True
-        self.Topmost = True
-        
-        try:
-            self.script_dir = os.path.dirname(os.path.realpath(__file__))
-        except NameError:
-            self.script_dir = None
-        
-        self.gizmo_radius_factor = 0.04
-        self.gizmo_height_factor = 1.0   
-        self.gizmo_text_offset = 1.2     
-        self.gizmo_min_size = 400        
-        self.gizmo_max_size = 400       
-        
-        self.original_breps = []
-        self.original_ids = []
-        self.edit_mode = False
-        self.edit_settings = None
-        self.edit_output_ids = []
-        self.source_ids = []
-        self.output_layer = None
-        
-        self.angle_x = 0
-        self.angle_y = 0
-        self.angle_z = 0
-        self.custom_length = None 
-        self.custom_B = None
-        self.custom_H = None
-        
-        self.conduit = SteelPreviewConduit()
-        self.conduit.Enabled = False
-        
-    def SetupData(self, original_breps, original_ids, edit_settings=None, edit_output_ids=None, source_ids=None, output_layer=None):
-        self.original_breps = original_breps
-        self.original_ids = original_ids
-        self.edit_settings = edit_settings
-        self.edit_mode = edit_settings is not None
-        self.edit_output_ids = edit_output_ids if edit_output_ids else []
-        self.source_ids = source_ids if source_ids else []
-        self.output_layer = output_layer
-        
-        self.CreateUI()
-        if self.edit_mode:
-            self.LoadEditSettings(edit_settings)
-            self.btn_ok.Text = "수정"
-            self.Title = "철골 수정기"
-        else:
-            self.LoadSticky()
-        
-        _, axes = get_obb_data(self.original_breps[0])
-        axes_sorted = sorted(axes, key=lambda x: x[1], reverse=True)
-        init_L = axes_sorted[0][1]
-        init_B = axes_sorted[1][1] if len(axes_sorted) > 1 else 0.0
-        init_H = axes_sorted[2][1] if len(axes_sorted) > 2 else 0.0
-        if self.custom_length is not None:
-            self.lbl_length.Text = "길이: {:.1f} mm".format(float(self.custom_length))
-        else:
-            self.lbl_length.Text = "인식된 길이: {:.1f} mm".format(init_L)
-        self.lbl_xy_auto.Text = "자동 X/Y: {:.1f} / {:.1f} mm".format(init_B, init_H)
-        
-        self.conduit.Enabled = True
-        self.UpdatePreview()
-        
-    def CreateUI(self):
-        layout = forms.DynamicLayout()
-        layout.Spacing = drawing.Size(5, 5)
-
-        self.dd_profile = forms.DropDown()
-        self.dd_profile.DataStore = ["H-Beam", "C-Channel", "L-Plate", "T-Beam"]
-        self.dd_profile.SelectedIndex = 0
-        self.dd_profile.SelectedIndexChanged += self.OnUIChange
-        layout.AddRow("부재 형상:", self.dd_profile)
-        
-        self.image_view = forms.ImageView()
-        self.image_view.Size = drawing.Size(120, 120) 
-        
-        img_layout = forms.DynamicLayout()
-        img_layout.AddRow(None, self.image_view, None) 
-        layout.AddRow(img_layout)
-        
-        self.num_t1 = forms.NumericStepper(Value=20.0, DecimalPlaces=1, Increment=0.5)
-        self.num_t1.ValueChanged += self.OnUIChange
-        layout.AddRow("Web 두께 (t1):", self.num_t1)
-        
-        self.num_t2 = forms.NumericStepper(Value=30.0, DecimalPlaces=1, Increment=0.5)
-        self.num_t2.ValueChanged += self.OnUIChange
-        layout.AddRow("Flange 두께 (t2):", self.num_t2)
-        
-        # --- r값 컨트롤러 추가 ---
-        self.num_r = forms.NumericStepper(Value=20.0, DecimalPlaces=1, Increment=1.0)
-        self.num_r.ValueChanged += self.OnUIChange
-        layout.AddRow("Fillet 반경 (r):", self.num_r)
-        
-        layout.AddRow(None)
-        
-        layout.AddRow(forms.Label(Text="📏 형상 길이 보정:"))
-        self.lbl_length = forms.Label(Text="길이: 계산 대기중...")
-        btn_reset_len = forms.Button(Text="길이 재설정")
-        btn_reset_len.Click += self.OnResetLengthClick
-        layout.AddRow(self.lbl_length, btn_reset_len)
-
-        layout.AddRow(None)
-        layout.AddRow(forms.Label(Text="📐 단면 X/Y 크기 수동 입력:"))
-        self.lbl_xy_auto = forms.Label(Text="자동 X/Y: 계산 대기중...")
-        layout.AddRow(self.lbl_xy_auto)
-        self.txt_custom_b = forms.TextBox(Text="")
-        self.txt_custom_b.Width = 80
-        self.txt_custom_h = forms.TextBox(Text="")
-        self.txt_custom_h.Width = 80
-        self.txt_custom_b.TextChanged += self.OnManualSizeTextChanged
-        self.txt_custom_h.TextChanged += self.OnManualSizeTextChanged
-        layout.AddRow(forms.Label(Text="X 크기(B):"), self.txt_custom_b, forms.Label(Text="비우면 자동"))
-        layout.AddRow(forms.Label(Text="Y 크기(H):"), self.txt_custom_h, forms.Label(Text="비우면 자동"))
-
-        layout.AddRow(None)
-        
-        layout.AddRow(forms.Label(Text="📐 방향 제어 (축 회전):"))
-        btn_rot_x = forms.Button(Text="🔄 X축 회전")
-        btn_rot_x.Click += self.OnRotX
-        self.lbl_rot_x = forms.Label(Text="0도")
-        layout.AddRow(btn_rot_x, self.lbl_rot_x)
-        
-        btn_rot_y = forms.Button(Text="🔄 Y축 회전")
-        btn_rot_y.Click += self.OnRotY
-        self.lbl_rot_y = forms.Label(Text="0도")
-        layout.AddRow(btn_rot_y, self.lbl_rot_y)
-        
-        btn_rot_z = forms.Button(Text="🔄 Z축 회전")
-        btn_rot_z.Click += self.OnRotZ
-        self.lbl_rot_z = forms.Label(Text="0도")
-        layout.AddRow(btn_rot_z, self.lbl_rot_z)
-        
-        self.btn_ok = forms.Button(Text="확인")
-        self.btn_ok.Click += self.OnOKClick
-        self.btn_cancel = forms.Button(Text="취소")
-        self.btn_cancel.Click += self.OnCancelClick
-        
-        btn_layout = forms.DynamicLayout(DefaultSpacing=drawing.Size(5, 5))
-        btn_layout.AddRow(self.btn_ok, self.btn_cancel)
-        layout.AddRow(btn_layout)
-
-        layout.AddRow(None)
-        
-        self.Content = layout
-
-    def UpdateProfileImage(self):
-        if not self.script_dir: return 
-        
-        file_map = {
-            "H-Beam": "H-Beam.png",
-            "C-Channel": "C-Channel.png",
-            "L-Plate": "L-Plate.png",
-            "T-Beam": "T-Beam.png"
-        }
-        
-        sel_val = self.dd_profile.SelectedValue
-        file_name = file_map.get(sel_val, "")
-        img_path = os.path.join(self.script_dir, "icons", file_name)
-        
-        if os.path.exists(img_path):
-            try:
-                self.image_view.Image = drawing.Bitmap(img_path)
-            except Exception as e:
-                print("이미지 렌더링 오류:", e)
-        else:
-            self.image_view.Image = None 
-
-    def OnResetLengthClick(self, sender, e):
-        self.Visible = False
-        try:
-            pt1 = rs.GetPoint("길이의 '시작점'을 클릭하세요.")
-            if pt1:
-                pt2 = rs.GetPoint("길이의 '끝점'을 클릭하세요.", pt1)
-                if pt2:
-                    dist = pt1.DistanceTo(pt2)
-                    self.custom_length = dist 
-                    self.lbl_length.Text = "길이: {:.1f} mm".format(dist)
-        except Exception as ex:
-            print(ex)
-        finally:
-            self.Visible = True
-            self.UpdatePreview()
-
-    def _parse_optional_float(self, text):
-        try:
-            if text is None: return None
-            text = str(text).strip()
-            if text == "": return None
-            value = float(text)
-            if value <= 0: return None
-            return value
-        except:
-            return None
-
-    def OnManualSizeTextChanged(self, sender, e):
-        self.custom_B = self._parse_optional_float(self.txt_custom_b.Text)
-        self.custom_H = self._parse_optional_float(self.txt_custom_h.Text)
-        self.UpdatePreview()
-
-    def LoadSticky(self):
-        if "Steel_Type" in sc.sticky: self.dd_profile.SelectedIndex = sc.sticky["Steel_Type"]
-        if "Steel_t1" in sc.sticky: self.num_t1.Value = sc.sticky["Steel_t1"]
-        if "Steel_t2" in sc.sticky: self.num_t2.Value = sc.sticky["Steel_t2"]
-        if "Steel_r" in sc.sticky: self.num_r.Value = sc.sticky["Steel_r"] # r값 불러오기
-        if "Steel_RotX" in sc.sticky: 
-            self.angle_x = sc.sticky["Steel_RotX"]
-            self.lbl_rot_x.Text = "{}도".format(self.angle_x)
-        if "Steel_RotY" in sc.sticky: 
-            self.angle_y = sc.sticky["Steel_RotY"]
-            self.lbl_rot_y.Text = "{}도".format(self.angle_y)
-        if "Steel_RotZ" in sc.sticky: 
-            self.angle_z = sc.sticky["Steel_RotZ"]
-            self.lbl_rot_z.Text = "{}도".format(self.angle_z)
-
-    def LoadEditSettings(self, settings):
-        if not settings: return
-        self.dd_profile.SelectedIndex = int(settings.get("profile_index", 0))
-        self.num_t1.Value = float(settings.get("t1", 20.0))
-        self.num_t2.Value = float(settings.get("t2", 30.0))
-        self.num_r.Value = float(settings.get("r", 20.0))
-        self.angle_x = int(settings.get("rot_x", 0))
-        self.angle_y = int(settings.get("rot_y", 0))
-        self.angle_z = int(settings.get("rot_z", 0))
-        self.custom_length = settings.get("custom_length", None)
-        self.custom_B = settings.get("custom_b", None)
-        self.custom_H = settings.get("custom_h", None)
-        if self.custom_B is not None:
-            self.txt_custom_b.Text = "{:.1f}".format(float(self.custom_B))
-        if self.custom_H is not None:
-            self.txt_custom_h.Text = "{:.1f}".format(float(self.custom_H))
-        self.lbl_rot_x.Text = "{}도".format(self.angle_x)
-        self.lbl_rot_y.Text = "{}도".format(self.angle_y)
-        self.lbl_rot_z.Text = "{}도".format(self.angle_z)
-
-    def CurrentSettings(self):
-        return {
-            "profile_index": int(self.dd_profile.SelectedIndex),
-            "t1": float(self.num_t1.Value),
-            "t2": float(self.num_t2.Value),
-            "r": float(self.num_r.Value),
-            "rot_x": int(self.angle_x),
-            "rot_y": int(self.angle_y),
-            "rot_z": int(self.angle_z),
-            "custom_length": self.custom_length,
-            "custom_b": self.custom_B,
-            "custom_h": self.custom_H
-        }
-
-    def SaveSticky(self):
-        sc.sticky["Steel_Type"] = self.dd_profile.SelectedIndex
-        sc.sticky["Steel_t1"] = self.num_t1.Value
-        sc.sticky["Steel_t2"] = self.num_t2.Value
-        sc.sticky["Steel_r"] = self.num_r.Value # r값 저장
-        sc.sticky["Steel_RotX"] = self.angle_x
-        sc.sticky["Steel_RotY"] = self.angle_y
-        sc.sticky["Steel_RotZ"] = self.angle_z
-
-    def OnUIChange(self, sender, e):
-        self.UpdatePreview()
-
-    def OnRotX(self, sender, e):
-        self.angle_x = (self.angle_x + 90) % 360
-        self.lbl_rot_x.Text = "{}도".format(self.angle_x)
-        self.UpdatePreview()
-        
-    def OnRotY(self, sender, e):
-        self.angle_y = (self.angle_y + 90) % 360
-        self.lbl_rot_y.Text = "{}도".format(self.angle_y)
-        self.UpdatePreview()
-        
-    def OnRotZ(self, sender, e):
-        self.angle_z = (self.angle_z + 90) % 360
-        self.lbl_rot_z.Text = "{}도".format(self.angle_z)
-        self.UpdatePreview()
-
-    def UpdatePreview(self):
-        self.UpdateProfileImage() 
-        
-        p_type = self.dd_profile.SelectedValue
-        t1 = self.num_t1.Value
-        t2 = self.num_t2.Value
-        r = self.num_r.Value # 뷰포트 업데이트 시 r값 전달
-        self.custom_B = self._parse_optional_float(self.txt_custom_b.Text)
-        self.custom_H = self._parse_optional_float(self.txt_custom_h.Text)
-        
-        self.conduit.breps = []
-        self.conduit.gizmo_breps = []
-        self.conduit.gizmo_texts = []
-        
-        for b in self.original_breps:
-            result = generate_steel_member(b, p_type, t1, t2, r, self.angle_x, self.angle_y, self.angle_z, self.custom_length, self.custom_B, self.custom_H)
-            
-            if result and result[0]:
-                steel_brep, gizmo_plane, max_dim = result
-                self.conduit.breps.append(steel_brep)
-                
-                size = max_dim * 1.5
-                if size < self.gizmo_min_size: size = self.gizmo_min_size
-                elif size > self.gizmo_max_size: size = self.gizmo_max_size 
-                
-                radius = size * self.gizmo_radius_factor   
-                cyl_h = size * self.gizmo_height_factor     
-                
-                sphere = rg.Sphere(gizmo_plane.Origin, radius * 2.0).ToBrep()
-                if sphere: self.conduit.gizmo_breps.append((sphere, self.conduit.mat_w))
-                
-                axes_info = [
-                    (gizmo_plane.XAxis, self.conduit.mat_x, System.Drawing.Color.Red, "X"),
-                    (gizmo_plane.YAxis, self.conduit.mat_y, System.Drawing.Color.LimeGreen, "Y"),
-                    (gizmo_plane.ZAxis, self.conduit.mat_z, System.Drawing.Color.DodgerBlue, "Z")
-                ]
-                
-                for vec, mat, color, text in axes_info:
-                    cyl_plane = rg.Plane(gizmo_plane.Origin, vec)
-                    cyl = rg.Cylinder(rg.Circle(cyl_plane, radius), cyl_h).ToBrep(True, True)
-                    if cyl: self.conduit.gizmo_breps.append((cyl, mat))
-                    
-                    text_pt = gizmo_plane.Origin + vec * (size * self.gizmo_text_offset)
-                    self.conduit.gizmo_texts.append((text, color, text_pt))
-                    
-        sc.doc.Views.Redraw()
-
-    def OnOKClick(self, sender, e):
-        self.SaveSticky()
-        self.conduit.Enabled = False
-        settings = self.CurrentSettings()
-        new_output_ids = []
-
-        for i, b in enumerate(self.conduit.breps):
-            if not b: continue
-
-            if self.edit_mode:
-                if self.edit_settings and self.edit_settings.get("steel_id", None):
-                    steel_id = self.edit_settings.get("steel_id")
-                else:
-                    steel_id = str(uuid.uuid4())
-                source_id = self.source_ids[i] if i < len(self.source_ids) else (self.source_ids[0] if self.source_ids else None)
-                if not source_id:
-                    source_id = _make_hidden_source_copy(self.original_breps[i], steel_id)
-            else:
-                steel_id = str(uuid.uuid4())
-                source_id = _make_hidden_source_copy(self.original_breps[i], steel_id)
-
-            obj_id = sc.doc.Objects.AddBrep(b)
-            if obj_id and obj_id != System.Guid.Empty:
-                if self.output_layer and rs.IsLayer(self.output_layer):
-                    try: rs.ObjectLayer(obj_id, self.output_layer)
-                    except: pass
-                if source_id:
-                    _write_steel_settings(obj_id, steel_id, source_id, settings)
-                new_output_ids.append(obj_id)
-
-        if self.edit_mode:
-            for old_id in self.edit_output_ids:
-                try: sc.doc.Objects.Delete(System.Guid(str(old_id)), True)
-                except:
-                    try: sc.doc.Objects.Delete(old_id, True)
-                    except: pass
-        else:
-            for bid in self.original_ids:
-                try: sc.doc.Objects.Delete(bid, True)
-                except: pass
-
-        sc.doc.Views.Redraw()
-        self.Close()
-
-    def OnCancelClick(self, sender, e):
-        self.conduit.Enabled = False
-        sc.doc.Views.Redraw()
-        self.Close()
-        
-    def OnClosed(self, e):
-        self.conduit.Enabled = False
-        sc.doc.Views.Redraw()
-        super(SteelConverterDialog, self).OnClosed(e)
-
-# -------------------------------------------------------------------------
-# 5. 실행 함수
-# -------------------------------------------------------------------------
-def _open_dialog_for_new(obj_ids):
-    breps = [rs.coercebrep(id) for id in obj_ids]
-    breps = [b for b in breps if b]
-    if not breps: return
-
-    dialog = SteelConverterDialog()
-    dialog.SetupData(breps, obj_ids)
-    dialog.Owner = Rhino.UI.RhinoEtoApp.MainWindow
-    dialog.Show()
-
-def _open_dialog_for_edit(selected_id):
-    settings = _read_steel_settings(selected_id)
-    if not settings:
-        return False
-
-    source_id = settings.get("source_id", None)
-    source_brep = _get_brep_from_id(source_id)
-    if not source_brep:
-        rs.MessageBox("편집용 기준 박스 정보를 찾을 수 없습니다.\n이 객체는 다시 수정할 수 없습니다.", 0, "수정 오류")
-        return True
-
-    steel_id = settings.get("steel_id")
-    output_ids = _find_output_ids_by_steel_id(steel_id)
-    if not output_ids:
-        output_ids = [selected_id]
-
-    try:
-        output_layer = rs.ObjectLayer(selected_id)
-    except:
-        output_layer = None
-
-    dialog = SteelConverterDialog()
-    dialog.SetupData([source_brep], [], edit_settings=settings, edit_output_ids=output_ids, source_ids=[source_id], output_layer=output_layer)
-    dialog.Owner = Rhino.UI.RhinoEtoApp.MainWindow
-    dialog.Show()
-    return True
-
-def main():
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("수정할 철골 부재를 선택하거나, 변환할 직육면체를 선택하세요")
-    go.GeometryFilter = Rhino.DocObjects.ObjectType.Brep
-    go.SubObjectSelect = False
-    go.EnablePreSelect(False, True)
-
-    opt_draw = go.AddOption("Draw3PointBox")
-    opt_multi = go.AddOption("SelectMultipleBoxes")
-
-    get_rc = go.Get()
-
-    if get_rc == Rhino.Input.GetResult.Option:
-        if go.Option().Index == opt_draw:
-            rs.UnselectAllObjects()
-            rs.Command("-_Box _3Point Pause Pause Pause Pause")
-            new_objs = rs.LastCreatedObjects()
-            if new_objs:
-                _open_dialog_for_new(new_objs)
-            else:
-                print("박스 생성이 취소되었거나 실패했습니다.")
-            return
-
-        elif go.Option().Index == opt_multi:
-            rs.UnselectAllObjects()
-            obj_ids = rs.GetObjects("변환할 직육면체들을 선택하세요.", rs.filter.polysurface)
-            if obj_ids:
-                _open_dialog_for_new(obj_ids)
-            return
-
-    elif get_rc == Rhino.Input.GetResult.Object:
-        obj_ref = go.Object(0)
-        obj_id = obj_ref.ObjectId
-
-        if _open_dialog_for_edit(obj_id):
-            return
-
-        brep = obj_ref.Brep()
-        if not brep:
-            rs.MessageBox("선택한 객체에서 Brep 정보를 읽을 수 없습니다.", 0, "선택 오류")
-            return
-
-        if len(list(brep.Faces)) != 6:
-            rs.MessageBox("이 객체에는 편집용 데이터가 없습니다.\n새 철골 부재로 변환하려면 6면 직육면체를 선택하거나 Draw3PointBox 옵션을 사용하세요.", 0, "선택 오류")
-            return
-
-        _open_dialog_for_new([obj_id])
+def delete_ids(ids):
+    if not ids:
         return
 
-    return
+    for obj_id in ids:
+        try:
+            if obj_id and rs.IsObject(obj_id):
+                rs.DeleteObject(obj_id)
+        except:
+            pass
+
+
+# ============================================================
+# Rectangle Input
+# ============================================================
+
+def get_rect_corners(curve_id):
+    if not rs.IsCurve(curve_id):
+        raise Exception("Selected object is not a curve.")
+
+    if not rs.IsCurveClosed(curve_id):
+        raise Exception("Selected curve must be closed.")
+
+    crv = rs.coercecurve(curve_id)
+
+    if crv is None:
+        raise Exception("Cannot read selected curve.")
+
+    if not crv.IsPlanar(tol()):
+        raise Exception("Selected curve must be planar.")
+
+    pts = rs.PolylineVertices(curve_id)
+
+    if pts is None:
+        raise Exception("Selected curve must be a closed rectangular polyline.")
+
+    pts = clean_poly_pts(pts)
+
+    if len(pts) != 4:
+        raise Exception("Selected polyline must have exactly 4 corner points.")
+
+    check_rect(pts)
+
+    return pts
+
+
+def check_rect(pts):
+    lengths = []
+
+    for i in range(4):
+        a = pts[i]
+        b = pts[(i + 1) % 4]
+        c = pts[(i + 2) % 4]
+
+        v1 = b - a
+        v2 = c - b
+
+        l1 = v1.Length
+        l2 = v2.Length
+
+        if l1 <= tol() or l2 <= tol():
+            raise Exception("Rectangle has zero-length edge.")
+
+        d = abs(dot(v1, v2)) / (l1 * l2)
+
+        if d > 0.05:
+            raise Exception("Selected polyline is not close enough to a rectangle.")
+
+        lengths.append(l1)
+
+    if abs(lengths[0] - lengths[2]) / max(lengths[0], lengths[2]) > 0.05:
+        raise Exception("Opposite edges are not similar enough.")
+
+    if abs(lengths[1] - lengths[3]) / max(lengths[1], lengths[3]) > 0.05:
+        raise Exception("Opposite edges are not similar enough.")
+
+
+# ============================================================
+# Local Coordinate Frame
+# ============================================================
+
+class Frame(object):
+    def __init__(self, origin, x, y, z, length, width):
+        self.origin = origin
+        self.x = x
+        self.y = y
+        self.z = z
+        self.length = length
+        self.width = width
+
+    def to_world(self, p):
+        return rg.Point3d(
+            self.origin.X + self.x.X * p.X + self.y.X * p.Y + self.z.X * p.Z,
+            self.origin.Y + self.x.Y * p.X + self.y.Y * p.Y + self.z.Y * p.Z,
+            self.origin.Z + self.x.Z * p.X + self.y.Z * p.Y + self.z.Z * p.Z
+        )
+
+
+def make_frame(pts):
+    e0 = pts[1] - pts[0]
+    e1 = pts[2] - pts[1]
+
+    len0 = e0.Length
+    len1 = e1.Length
+
+    normal = unit(rg.Vector3d.CrossProduct(e0, e1))
+
+    if dot(normal, rg.Vector3d(0, 0, 1)) < 0:
+        normal = rg.Vector3d(-normal.X, -normal.Y, -normal.Z)
+
+    if len0 >= len1:
+        x = unit(e0)
+        length = len0
+        width = len1
+    else:
+        x = unit(e1)
+        length = len1
+        width = len0
+
+    y = unit(rg.Vector3d.CrossProduct(normal, x))
+    origin = avg_pts(pts)
+
+    return Frame(origin, x, y, normal, length, width)
+
+
+# ============================================================
+# Parameters
+# ============================================================
+
+class Params(object):
+    def __init__(self, frame):
+        w = frame.width
+
+        self.roof_type = "hip_gable"
+
+        self.height = w * 0.45
+        self.eave = w * 0.12
+
+        self.ridge_ratio = 0.55
+        self.gable_width_ratio = 0.70
+        self.gable_z_ratio = 0.45
+
+        self.corner_lift = w * 0.04
+        self.eave_sag = w * 0.02
+        self.surface_sag = w * 0.03
+        self.thickness = w * 0.04
+
+        self.u_seg = 24
+        self.v_seg = 6
+
+        self.guides = True
+
+
+# ============================================================
+# Roof Shape Functions
+# ============================================================
+
+def roof_size(frame, par):
+    return frame.length + par.eave * 2.0, frame.width + par.eave * 2.0
+
+
+def base_corners(L, W):
+    A = rg.Point3d(-L / 2.0, -W / 2.0, 0.0)
+    B = rg.Point3d( L / 2.0, -W / 2.0, 0.0)
+    C = rg.Point3d( L / 2.0,  W / 2.0, 0.0)
+    D = rg.Point3d(-L / 2.0,  W / 2.0, 0.0)
+
+    return A, B, C, D
+
+
+def corner_lift_value(x, y, L, W, amount):
+    if amount <= 0:
+        return 0.0
+
+    hx = L * 0.5
+    hy = W * 0.5
+
+    if hx <= 0 or hy <= 0:
+        return 0.0
+
+    ux = abs(x) / hx
+    uy = abs(y) / hy
+
+    return amount * math.pow(ux * uy, 1.5)
+
+
+def eave_point(p0, p1, t, L, W, par, use_curve):
+    p = lerp(p0, p1, t)
+
+    if use_curve:
+        lift = corner_lift_value(p.X, p.Y, L, W, par.corner_lift)
+        sag = par.eave_sag * math.sin(math.pi * t)
+        p.Z = lift - sag
+
+    return p
+
+
+def sag_point(p, v, par):
+    if par.surface_sag <= 0:
+        return p
+
+    sag = par.surface_sag * math.sin(math.pi * v)
+    return rg.Point3d(p.X, p.Y, p.Z - sag)
+
+
+# ============================================================
+# Mesh Helpers
+# ============================================================
+
+def vi(mesh, frame, p):
+    return mesh.Vertices.Add(frame.to_world(p))
+
+
+def quad(mesh, a, b, c, d):
+    mesh.Faces.AddFace(a, b, c, d)
+
+
+def tri(mesh, a, b, c):
+    mesh.Faces.AddFace(a, b, c)
+
+
+def finish_mesh(mesh):
+    try:
+        mesh.Faces.CullDegenerateFaces()
+    except:
+        pass
+
+    try:
+        mesh.FaceNormals.ComputeFaceNormals()
+    except:
+        pass
+
+    try:
+        mesh.UnifyNormals()
+    except:
+        pass
+
+    try:
+        mesh.Normals.ComputeNormals()
+    except:
+        pass
+
+    mesh.Compact()
+    return mesh
+
+
+def ruled_quad(mesh, frame, p00, p10, p01, p11, L, W, par, bottom_eave):
+    u_count = max(2, int(par.u_seg))
+    v_count = max(1, int(par.v_seg))
+
+    grid = []
+
+    for i in range(u_count + 1):
+        u = float(i) / float(u_count)
+
+        bottom = eave_point(p00, p10, u, L, W, par, bottom_eave)
+        top = eave_point(p01, p11, u, L, W, par, False)
+
+        col = []
+
+        for j in range(v_count + 1):
+            v = float(j) / float(v_count)
+            p = lerp(bottom, top, v)
+            p = sag_point(p, v, par)
+            col.append(vi(mesh, frame, p))
+
+        grid.append(col)
+
+    for i in range(u_count):
+        for j in range(v_count):
+            quad(
+                mesh,
+                grid[i][j],
+                grid[i + 1][j],
+                grid[i + 1][j + 1],
+                grid[i][j + 1]
+            )
+
+
+def ruled_tri(mesh, frame, e0, e1, apex, L, W, par, bottom_eave):
+    u_count = max(2, int(par.u_seg))
+    v_count = max(1, int(par.v_seg))
+
+    rows = []
+
+    for j in range(v_count):
+        v = float(j) / float(v_count)
+        row = []
+
+        for i in range(u_count + 1):
+            u = float(i) / float(u_count)
+            ep = eave_point(e0, e1, u, L, W, par, bottom_eave)
+            p = lerp(ep, apex, v)
+            p = sag_point(p, v, par)
+            row.append(vi(mesh, frame, p))
+
+        rows.append(row)
+
+    apex_id = vi(mesh, frame, apex)
+
+    for j in range(v_count - 1):
+        for i in range(u_count):
+            quad(
+                mesh,
+                rows[j][i],
+                rows[j][i + 1],
+                rows[j + 1][i + 1],
+                rows[j + 1][i]
+            )
+
+    last = rows[-1]
+
+    for i in range(u_count):
+        tri(mesh, last[i], last[i + 1], apex_id)
+
+
+# ============================================================
+# Roof Builders
+# ============================================================
+
+def build_gable(frame, par):
+    mesh = rg.Mesh()
+
+    L, W = roof_size(frame, par)
+    A, B, C, D = base_corners(L, W)
+
+    R0 = rg.Point3d(-L / 2.0, 0.0, par.height)
+    R1 = rg.Point3d( L / 2.0, 0.0, par.height)
+
+    ruled_quad(mesh, frame, A, B, R0, R1, L, W, par, True)
+    ruled_quad(mesh, frame, D, C, R0, R1, L, W, par, True)
+    ruled_tri(mesh, frame, A, D, R0, L, W, par, True)
+    ruled_tri(mesh, frame, B, C, R1, L, W, par, True)
+
+    guide = {
+        "L": L,
+        "W": W,
+        "ridge": [R0, R1],
+        "edges": [[A, R0], [D, R0], [B, R1], [C, R1]],
+        "eave": [A, B, C, D, A]
+    }
+
+    return finish_mesh(mesh), guide
+
+
+def build_hipped(frame, par):
+    mesh = rg.Mesh()
+
+    L, W = roof_size(frame, par)
+    A, B, C, D = base_corners(L, W)
+
+    r = L * par.ridge_ratio
+
+    R0 = rg.Point3d(-r / 2.0, 0.0, par.height)
+    R1 = rg.Point3d( r / 2.0, 0.0, par.height)
+
+    ruled_quad(mesh, frame, A, B, R0, R1, L, W, par, True)
+    ruled_quad(mesh, frame, D, C, R0, R1, L, W, par, True)
+    ruled_tri(mesh, frame, A, D, R0, L, W, par, True)
+    ruled_tri(mesh, frame, B, C, R1, L, W, par, True)
+
+    guide = {
+        "L": L,
+        "W": W,
+        "ridge": [R0, R1],
+        "edges": [[A, R0], [D, R0], [B, R1], [C, R1]],
+        "eave": [A, B, C, D, A]
+    }
+
+    return finish_mesh(mesh), guide
+
+
+def build_hip_gable(frame, par):
+    mesh = rg.Mesh()
+
+    L, W = roof_size(frame, par)
+    A, B, C, D = base_corners(L, W)
+
+    r = L * par.ridge_ratio
+    gw = W * par.gable_width_ratio
+    gz = par.height * par.gable_z_ratio
+
+    R0 = rg.Point3d(-r / 2.0, 0.0, par.height)
+    R1 = rg.Point3d( r / 2.0, 0.0, par.height)
+
+    G0S = rg.Point3d(-r / 2.0, -gw / 2.0, gz)
+    G0N = rg.Point3d(-r / 2.0,  gw / 2.0, gz)
+
+    G1S = rg.Point3d( r / 2.0, -gw / 2.0, gz)
+    G1N = rg.Point3d( r / 2.0,  gw / 2.0, gz)
+
+    ruled_quad(mesh, frame, A, B, G0S, G1S, L, W, par, True)
+    ruled_quad(mesh, frame, G0S, G1S, R0, R1, L, W, par, False)
+
+    ruled_quad(mesh, frame, D, C, G0N, G1N, L, W, par, True)
+    ruled_quad(mesh, frame, G0N, G1N, R0, R1, L, W, par, False)
+
+    ruled_quad(mesh, frame, A, D, G0S, G0N, L, W, par, True)
+    ruled_quad(mesh, frame, B, C, G1S, G1N, L, W, par, True)
+
+    ruled_tri(mesh, frame, G0S, G0N, R0, L, W, par, False)
+    ruled_tri(mesh, frame, G1S, G1N, R1, L, W, par, False)
+
+    guide = {
+        "L": L,
+        "W": W,
+        "ridge": [R0, R1],
+        "edges": [
+            [G0S, R0], [G0N, R0],
+            [G1S, R1], [G1N, R1],
+            [A, G0S], [D, G0N],
+            [B, G1S], [C, G1N]
+        ],
+        "gable_left": [G0S, R0, G0N, G0S],
+        "gable_right": [G1S, R1, G1N, G1S],
+        "eave": [A, B, C, D, A]
+    }
+
+    return finish_mesh(mesh), guide
+
+
+def build_roof(frame, par):
+    if par.roof_type == "gable":
+        return build_gable(frame, par)
+
+    if par.roof_type == "hipped":
+        return build_hipped(frame, par)
+
+    return build_hip_gable(frame, par)
+
+
+# ============================================================
+# Fascia / Guide Curves
+# ============================================================
+
+def sample_edge(p0, p1, L, W, par, count, include_start):
+    pts = []
+    start = 0
+
+    if not include_start:
+        start = 1
+
+    for i in range(start, count + 1):
+        t = float(i) / float(count)
+        pts.append(eave_point(p0, p1, t, L, W, par, True))
+
+    return pts
+
+
+def sample_eave_loop(L, W, par):
+    A, B, C, D = base_corners(L, W)
+    count = max(4, int(par.u_seg))
+
+    pts = []
+    pts.extend(sample_edge(A, B, L, W, par, count, True))
+    pts.extend(sample_edge(B, C, L, W, par, count, False))
+    pts.extend(sample_edge(C, D, L, W, par, count, False))
+    pts.extend(sample_edge(D, A, L, W, par, count, False))
+
+    return pts
+
+
+def build_fascia(frame, par):
+    if par.thickness <= 0:
+        return None
+
+    L, W = roof_size(frame, par)
+    loop = sample_eave_loop(L, W, par)
+
+    if len(loop) < 4:
+        return None
+
+    mesh = rg.Mesh()
+    n = len(loop)
+
+    for i in range(n):
+        p0 = loop[i]
+        p1 = loop[(i + 1) % n]
+
+        q0 = rg.Point3d(p0.X, p0.Y, p0.Z - par.thickness)
+        q1 = rg.Point3d(p1.X, p1.Y, p1.Z - par.thickness)
+
+        a = vi(mesh, frame, p0)
+        b = vi(mesh, frame, p1)
+        c = vi(mesh, frame, q1)
+        d = vi(mesh, frame, q0)
+
+        quad(mesh, a, b, c, d)
+
+    return finish_mesh(mesh)
+
+
+def add_mesh(mesh, layer, color, name):
+    ensure_layer(layer, color)
+
+    obj_id = sc.doc.Objects.AddMesh(mesh)
+
+    if obj_id == System.Guid.Empty:
+        return None
+
+    try:
+        rs.ObjectLayer(obj_id, layer)
+        rs.ObjectColor(obj_id, color)
+        rs.ObjectName(obj_id, name)
+    except:
+        pass
+
+    return obj_id
+
+
+def add_curve(frame, pts, layer, color, name):
+    ensure_layer(layer, color)
+
+    wpts = []
+
+    for p in pts:
+        wpts.append(frame.to_world(p))
+
+    pl = rg.Polyline(wpts)
+
+    if not pl.IsValid:
+        return None
+
+    obj_id = sc.doc.Objects.AddCurve(pl.ToNurbsCurve())
+
+    if obj_id == System.Guid.Empty:
+        return None
+
+    try:
+        rs.ObjectLayer(obj_id, layer)
+        rs.ObjectColor(obj_id, color)
+        rs.ObjectName(obj_id, name)
+    except:
+        pass
+
+    return obj_id
+
+
+def add_guides(frame, par, guide):
+    layer = "HanokRoof_Guide"
+    color = SD.Color.DarkRed
+
+    add_curve(frame, guide["ridge"], layer, color, "Hanok_Ridge")
+
+    for e in guide["edges"]:
+        add_curve(frame, e, layer, color, "Hanok_HipLine")
+
+    if "gable_left" in guide:
+        add_curve(frame, guide["gable_left"], layer, color, "Hanok_Gable_Left")
+
+    if "gable_right" in guide:
+        add_curve(frame, guide["gable_right"], layer, color, "Hanok_Gable_Right")
+
+    eave = sample_eave_loop(guide["L"], guide["W"], par)
+
+    if eave:
+        eave.append(eave[0])
+        add_curve(frame, eave, layer, color, "Hanok_Curved_Eave")
+
+
+# ============================================================
+# Preview Manager
+# ============================================================
+
+class Preview(object):
+    def __init__(self):
+        self.ids = []
+
+    def clear(self):
+        rs.EnableRedraw(False)
+
+        try:
+            delete_ids(self.ids)
+            self.ids = []
+        finally:
+            rs.EnableRedraw(True)
+            sc.doc.Views.Redraw()
+
+    def update(self, frame, par):
+        rs.EnableRedraw(False)
+
+        try:
+            delete_ids(self.ids)
+            self.ids = []
+
+            roof, guide = build_roof(frame, par)
+            fascia = build_fascia(frame, par)
+
+            rid = add_mesh(
+                roof,
+                "HanokRoof_PREVIEW",
+                SD.Color.FromArgb(160, 110, 70),
+                "HanokRoof_PREVIEW_Roof"
+            )
+
+            if rid:
+                self.ids.append(rid)
+
+            if fascia:
+                fid = add_mesh(
+                    fascia,
+                    "HanokRoof_PREVIEW",
+                    SD.Color.FromArgb(120, 80, 50),
+                    "HanokRoof_PREVIEW_Fascia"
+                )
+
+                if fid:
+                    self.ids.append(fid)
+
+        finally:
+            rs.EnableRedraw(True)
+            sc.doc.Views.Redraw()
+
+
+# ============================================================
+# Numerical Input Row
+# ============================================================
+
+class NumberRow(object):
+    def __init__(self, title, value, suffix, apply_callback):
+        self.title = title
+        self.suffix = suffix
+        self.apply_callback = apply_callback
+
+        self.label = forms.Label()
+        self.label.Text = title
+
+        self.textbox = forms.TextBox()
+        self.textbox.Width = 90
+        self.textbox.Text = self.format_value(value)
+
+        self.unit_label = forms.Label()
+        self.unit_label.Text = suffix
+        self.unit_label.Width = 45
+
+        self.textbox.KeyDown += self.on_key_down
+
+    def format_value(self, value):
+        try:
+            v = float(value)
+
+            if abs(v - int(v)) < 0.000001:
+                return str(int(v))
+
+            return str(round(v, 3))
+
+        except:
+            return str(value)
+
+    def on_key_down(self, sender, e):
+        try:
+            key_name = str(e.Key)
+
+            if key_name == "Enter" or key_name == "Return":
+                if self.apply_callback:
+                    self.apply_callback()
+
+                e.Handled = True
+
+        except:
+            pass
+
+    def value(self, default_value):
+        text = self.textbox.Text
+
+        try:
+            return float(text)
+        except:
+            self.textbox.Text = self.format_value(default_value)
+            return float(default_value)
+
+
+# ============================================================
+# Modeless Eto Form
+# ============================================================
+
+class HanokRoofForm(forms.Form):
+    def __init__(self):
+        forms.Form.__init__(self)
+
+        self.frame = None
+        self.par = None
+        self.preview = Preview()
+
+        self.ready = False
+        self.accepted = False
+
+    def setup(self, frame):
+        self.frame = frame
+        self.par = Params(frame)
+
+        self.Title = "Hanok Roof Generator"
+        self.Padding = drawing.Padding(10)
+        self.Resizable = False
+
+        try:
+            self.Owner = Rhino.UI.RhinoEtoApp.MainWindow
+        except:
+            pass
+
+        self.make_controls()
+        self.make_layout()
+        self.bind_events()
+
+        self.ready = True
+        self.apply_preview()
+
+    def make_controls(self):
+        self.roof_types = ["gable", "hipped", "hip_gable"]
+
+        self.type_combo = forms.ComboBox()
+        self.type_combo.DataStore = self.roof_types
+        self.type_combo.SelectedIndex = 2
+
+        self.height = NumberRow("Roof Height", 45, "%W", self.apply_preview)
+        self.eave = NumberRow("Eave Offset", 12, "%W", self.apply_preview)
+
+        self.ridge = NumberRow("Ridge Ratio", 55, "%", self.apply_preview)
+        self.gable_w = NumberRow("Gable Width", 70, "%", self.apply_preview)
+        self.gable_z = NumberRow("Gable Height", 45, "%", self.apply_preview)
+
+        self.corner = NumberRow("Corner Lift", 4, "%W", self.apply_preview)
+        self.eave_sag = NumberRow("Eave Sag", 2, "%W", self.apply_preview)
+        self.surface_sag = NumberRow("Surface Sag", 3, "%W", self.apply_preview)
+        self.thickness = NumberRow("Fascia Thickness", 4, "%W", self.apply_preview)
+
+        self.u_seg = NumberRow("Length Segments", 24, "", self.apply_preview)
+        self.v_seg = NumberRow("Slope Segments", 6, "", self.apply_preview)
+
+        self.preview_check = forms.CheckBox()
+        self.preview_check.Text = "Live preview"
+        self.preview_check.Checked = True
+
+        self.guide_check = forms.CheckBox()
+        self.guide_check.Text = "Add guide curves"
+        self.guide_check.Checked = True
+
+        self.apply_button = forms.Button()
+        self.apply_button.Text = "Apply Preview"
+
+        self.ok = forms.Button()
+        self.ok.Text = "OK"
+
+        self.cancel = forms.Button()
+        self.cancel.Text = "Cancel"
+
+    def make_layout(self):
+        layout = forms.DynamicLayout()
+        layout.Padding = drawing.Padding(8)
+        layout.Spacing = drawing.Size(5, 5)
+
+        title = forms.Label()
+        title.Text = "Hanok Roof Parameters"
+
+        note = forms.Label()
+        note.Text = "Type a value, then press Enter or Apply Preview."
+
+        layout.AddRow(title)
+        layout.AddRow(note)
+        layout.AddRow(None)
+
+        roof_type_label = forms.Label()
+        roof_type_label.Text = "Roof Type"
+        layout.AddRow(roof_type_label, self.type_combo)
+
+        self.add_number_row(layout, self.height)
+        self.add_number_row(layout, self.eave)
+        self.add_number_row(layout, self.ridge)
+
+        layout.AddRow(None)
+
+        self.add_number_row(layout, self.gable_w)
+        self.add_number_row(layout, self.gable_z)
+
+        layout.AddRow(None)
+
+        self.add_number_row(layout, self.corner)
+        self.add_number_row(layout, self.eave_sag)
+        self.add_number_row(layout, self.surface_sag)
+        self.add_number_row(layout, self.thickness)
+
+        layout.AddRow(None)
+
+        self.add_number_row(layout, self.u_seg)
+        self.add_number_row(layout, self.v_seg)
+
+        layout.AddRow(None)
+
+        layout.AddRow(self.preview_check)
+        layout.AddRow(self.guide_check)
+
+        layout.AddRow(None)
+
+        apply_row = forms.StackLayout()
+        apply_row.Orientation = forms.Orientation.Horizontal
+        apply_row.Spacing = 5
+        apply_row.Items.Add(self.apply_button)
+
+        layout.AddRow(None, apply_row)
+
+        layout.AddRow(None)
+
+        button_row = forms.StackLayout()
+        button_row.Orientation = forms.Orientation.Horizontal
+        button_row.Spacing = 5
+        button_row.Items.Add(self.ok)
+        button_row.Items.Add(self.cancel)
+
+        layout.AddRow(None, button_row)
+
+        self.Content = layout
+
+    def add_number_row(self, layout, row):
+        layout.AddRow(row.label, row.textbox, row.unit_label)
+
+    def bind_events(self):
+        self.apply_button.Click += self.on_apply
+        self.preview_check.CheckedChanged += self.on_preview_toggle
+
+        self.ok.Click += self.on_ok
+        self.cancel.Click += self.on_cancel
+
+        self.Closing += self.on_closing
+        self.Closed += self.on_closed
+
+    def read_ui(self):
+        idx = self.type_combo.SelectedIndex
+
+        if idx < 0:
+            idx = 2
+
+        w = self.frame.width
+
+        self.par.roof_type = self.roof_types[idx]
+
+        height_pct = self.height.value(45)
+        eave_pct = self.eave.value(12)
+
+        ridge_pct = self.ridge.value(55)
+        gable_w_pct = self.gable_w.value(70)
+        gable_z_pct = self.gable_z.value(45)
+
+        corner_pct = self.corner.value(4)
+        eave_sag_pct = self.eave_sag.value(2)
+        surface_sag_pct = self.surface_sag.value(3)
+        thickness_pct = self.thickness.value(4)
+
+        u_value = self.u_seg.value(24)
+        v_value = self.v_seg.value(6)
+
+        height_pct = max(1.0, min(height_pct, 300.0))
+        eave_pct = max(0.0, min(eave_pct, 200.0))
+
+        ridge_pct = max(5.0, min(ridge_pct, 100.0))
+        gable_w_pct = max(10.0, min(gable_w_pct, 100.0))
+        gable_z_pct = max(5.0, min(gable_z_pct, 95.0))
+
+        corner_pct = max(0.0, min(corner_pct, 100.0))
+        eave_sag_pct = max(0.0, min(eave_sag_pct, 100.0))
+        surface_sag_pct = max(0.0, min(surface_sag_pct, 100.0))
+        thickness_pct = max(0.0, min(thickness_pct, 100.0))
+
+        u_value = int(max(4, min(u_value, 120)))
+        v_value = int(max(1, min(v_value, 48)))
+
+        self.par.height = w * height_pct / 100.0
+        self.par.eave = w * eave_pct / 100.0
+
+        self.par.ridge_ratio = ridge_pct / 100.0
+        self.par.gable_width_ratio = gable_w_pct / 100.0
+        self.par.gable_z_ratio = gable_z_pct / 100.0
+
+        self.par.corner_lift = w * corner_pct / 100.0
+        self.par.eave_sag = w * eave_sag_pct / 100.0
+        self.par.surface_sag = w * surface_sag_pct / 100.0
+        self.par.thickness = w * thickness_pct / 100.0
+
+        self.par.u_seg = u_value
+        self.par.v_seg = v_value
+
+        self.par.guides = bool(self.guide_check.Checked)
+
+        self.height.textbox.Text = self.height.format_value(height_pct)
+        self.eave.textbox.Text = self.eave.format_value(eave_pct)
+
+        self.ridge.textbox.Text = self.ridge.format_value(ridge_pct)
+        self.gable_w.textbox.Text = self.gable_w.format_value(gable_w_pct)
+        self.gable_z.textbox.Text = self.gable_z.format_value(gable_z_pct)
+
+        self.corner.textbox.Text = self.corner.format_value(corner_pct)
+        self.eave_sag.textbox.Text = self.eave_sag.format_value(eave_sag_pct)
+        self.surface_sag.textbox.Text = self.surface_sag.format_value(surface_sag_pct)
+        self.thickness.textbox.Text = self.thickness.format_value(thickness_pct)
+
+        self.u_seg.textbox.Text = self.u_seg.format_value(u_value)
+        self.v_seg.textbox.Text = self.v_seg.format_value(v_value)
+
+    def on_apply(self, sender, e):
+        self.apply_preview()
+
+    def on_preview_toggle(self, sender, e):
+        if bool(self.preview_check.Checked):
+            self.apply_preview()
+        else:
+            self.preview.clear()
+
+    def apply_preview(self):
+        if not self.ready:
+            return
+
+        if not bool(self.preview_check.Checked):
+            return
+
+        try:
+            self.read_ui()
+            self.preview.update(self.frame, self.par)
+
+        except Exception as ex:
+            forms.MessageBox.Show(
+                "Preview failed:\n" + str(ex),
+                "Hanok Roof Generator"
+            )
+
+    def create_final(self):
+        self.read_ui()
+
+        roof, guide = build_roof(self.frame, self.par)
+        fascia = build_fascia(self.frame, self.par)
+
+        add_mesh(
+            roof,
+            "HanokRoof_Mesh",
+            SD.Color.FromArgb(145, 92, 55),
+            "HanokRoof_Roof"
+        )
+
+        if fascia:
+            add_mesh(
+                fascia,
+                "HanokRoof_Fascia",
+                SD.Color.FromArgb(110, 70, 42),
+                "HanokRoof_EaveFascia"
+            )
+
+        if self.par.guides:
+            add_guides(self.frame, self.par, guide)
+
+        sc.doc.Views.Redraw()
+
+    def on_ok(self, sender, e):
+        try:
+            self.accepted = True
+            self.preview.clear()
+            self.create_final()
+            self.Close()
+
+        except Exception as ex:
+            forms.MessageBox.Show(
+                "Failed to create roof:\n" + str(ex),
+                "Hanok Roof Generator"
+            )
+
+    def on_cancel(self, sender, e):
+        self.accepted = False
+        self.preview.clear()
+        self.Close()
+
+    def on_closing(self, sender, e):
+        if not self.accepted:
+            self.preview.clear()
+
+    def on_closed(self, sender, e):
+        key = "HanokRoofGenerator_Form"
+
+        try:
+            if key in sc.sticky:
+                del sc.sticky[key]
+        except:
+            pass
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    key = "HanokRoofGenerator_Form"
+
+    try:
+        if key in sc.sticky:
+            old = sc.sticky[key]
+
+            if old:
+                old.Close()
+
+            del sc.sticky[key]
+    except:
+        pass
+
+    curve_id = rs.GetObject(
+        "Select closed rectangular polyline for Hanok roof",
+        rs.filter.curve,
+        True,
+        True
+    )
+
+    if not curve_id:
+        return
+
+    try:
+        corners = get_rect_corners(curve_id)
+        frame = make_frame(corners)
+
+        form = HanokRoofForm()
+        form.setup(frame)
+
+        try:
+            form.Owner = Rhino.UI.RhinoEtoApp.MainWindow
+        except:
+            pass
+
+        form.Show()
+
+        sc.sticky[key] = form
+
+    except Exception as ex:
+        print "Hanok roof generator failed:"
+        print str(ex)
+
+        forms.MessageBox.Show(
+            "Hanok roof generator failed:\n" + str(ex),
+            "Hanok Roof Generator"
+        )
+
 
 if __name__ == "__main__":
     main()

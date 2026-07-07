@@ -8,6 +8,7 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 import System
 import json
+import os
 
 # ==============================================================================
 # 미닫이문 식별 / 재수정용 UserText Key
@@ -92,6 +93,7 @@ def _try_get_edit_data_from_getobject(go):
     if obj_id:
         data = read_door_data_from_object(obj_id)
         if data:
+            data["_selected_id"] = obj_id
             return data
 
     try:
@@ -103,6 +105,7 @@ def _try_get_edit_data_from_getobject(go):
         try:
             data = read_door_data_from_object(rh_obj.Id)
             if data:
+                data["_selected_id"] = rh_obj.Id
                 return data
         except:
             pass
@@ -118,6 +121,7 @@ def find_existing_door_from_selection():
     for obj_id in selected:
         data = read_door_data_from_object(obj_id)
         if data:
+            data["_selected_id"] = obj_id
             return data
 
     return None
@@ -167,6 +171,627 @@ def clear_selection_and_redraw():
         pass
 
 # ==============================================================================
+# [0-1] 프리셋 / Transform / 세트 판별 유틸리티
+# ==============================================================================
+def _get_appdata_folder():
+    try:
+        base = os.environ.get("APPDATA", None)
+        if not base:
+            base = os.path.expanduser("~")
+        folder = os.path.join(base, "ElephantTools")
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        return folder
+    except:
+        return None
+
+
+def _get_preset_file_path():
+    folder = _get_appdata_folder()
+    if not folder:
+        return None
+    return os.path.join(folder, "SlidingDoorPresets.json")
+
+
+def load_sliding_presets():
+    path = _get_preset_file_path()
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except:
+        return {}
+
+
+def save_sliding_presets(presets):
+    path = _get_preset_file_path()
+    if not path:
+        return False
+    try:
+        with open(path, "w") as f:
+            json.dump(presets, f, indent=2, sort_keys=True)
+        return True
+    except Exception as ex:
+        print("SlidingDoor preset save error:", ex)
+        return False
+
+
+def _safe_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ["1", "true", "yes", "y", "on"]
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(float(value))
+    except:
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except:
+        return default
+
+
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def _normalize_sliding_settings(settings):
+    s = dict(settings or {})
+    panel_count = _safe_int(s.get("panel_count", 2), 2)
+    if panel_count not in [2, 3, 4]:
+        panel_count = 2
+    open_value = _clamp(_safe_int(s.get("open_value", 0), 0), 0, 100)
+
+    return {
+        "panel_count": panel_count,
+        "has_threshold": _safe_bool(s.get("has_threshold", True), True),
+        "frame_t": str(s.get("frame_t", "30")),
+        "frame_d": str(s.get("frame_d", "200")),
+        "pframe_t": str(s.get("pframe_t", "60")),
+        "flip": _safe_bool(s.get("flip", False), False),
+        "union": _safe_bool(s.get("union", False), False),
+        "open_value": int(open_value)
+    }
+
+
+def get_brep_from_id(obj_id):
+    try:
+        return rs.coercebrep(obj_id)
+    except:
+        try:
+            return rs.coercebrep(System.Guid(str(obj_id)))
+        except:
+            return None
+
+
+def get_object_bbox_center(obj_id):
+    brep = get_brep_from_id(obj_id)
+    if not brep:
+        return None
+    try:
+        return brep.GetBoundingBox(True).Center
+    except:
+        return None
+
+
+def _unique_object_ids(ids):
+    result = []
+    seen = set()
+    for obj_id in ids or []:
+        key = str(obj_id)
+        if key not in seen:
+            seen.add(key)
+            result.append(obj_id)
+    return result
+
+
+def _delete_object_ids(ids):
+    for obj_id in _unique_object_ids(ids):
+        try:
+            sc.doc.Objects.Delete(System.Guid(str(obj_id)), True)
+        except:
+            try:
+                rs.DeleteObject(obj_id)
+            except:
+                pass
+
+
+def generate_sliding_door_geometry(base_plane, width, height, settings):
+    settings = _normalize_sliding_settings(settings)
+
+    W, H = float(width), float(height)
+    T_frame = _safe_float(settings.get("frame_t"), 30.0)
+    D_frame = _safe_float(settings.get("frame_d"), 200.0)
+
+    has_threshold = _safe_bool(settings.get("has_threshold"), True)
+    do_union = _safe_bool(settings.get("union"), False)
+    panel_count = _safe_int(settings.get("panel_count"), 2)
+    if panel_count not in [2, 3, 4]:
+        panel_count = 2
+
+    T_pframe = _safe_float(settings.get("pframe_t"), 60.0)
+    T_pdepth = 30.0
+    T_glass = 10.0
+
+    open_ratio = _clamp(_safe_int(settings.get("open_value"), 0), 0, 100) / 100.0
+    parts = []
+    tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
+
+    outer_frames = []
+    outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, T_frame), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
+    outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(W - T_frame, W), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
+
+    if do_union:
+        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
+        if has_threshold:
+            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
+    else:
+        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
+        if has_threshold:
+            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
+
+    if do_union:
+        unioned_outer = rg.Brep.CreateBooleanUnion(outer_frames, tol)
+        if unioned_outer and len(unioned_outer) > 0:
+            for b in unioned_outer:
+                parts.append(("frame", b))
+        else:
+            for b in outer_frames:
+                parts.append(("frame", b))
+    else:
+        for b in outer_frames:
+            parts.append(("frame", b))
+
+    z_start = T_frame if has_threshold else 0.0
+    z_end = H - T_frame
+    total_w = W - (2 * T_frame)
+
+    num_overlaps = 2 if panel_count in [3, 4] else 1
+    p_w = (total_w + num_overlaps * T_pframe) / panel_count
+
+    if panel_count == 2:
+        y_coords = [30.0, 60.0]
+        x_starts = [T_frame, T_frame + p_w - T_pframe]
+    elif panel_count == 3:
+        y_coords = [30.0, 60.0, 90.0]
+        x_starts = [T_frame, T_frame + p_w - T_pframe, T_frame + 2 * p_w - 2 * T_pframe]
+    else:
+        y_coords = [30.0, 60.0, 60.0, 30.0]
+        x_starts = [T_frame, T_frame + p_w - T_pframe, T_frame + 2 * p_w - T_pframe, T_frame + 3 * p_w - 2 * T_pframe]
+
+    def make_box(ix, iy, iz):
+        return rg.Box(rg.Plane.WorldXY, ix, iy, iz).ToBrep()
+
+    for i in range(panel_count):
+        x_start = x_starts[i]
+        move_x = 0
+
+        if panel_count == 2:
+            if i == 0:
+                move_x = open_ratio * (p_w - T_pframe)
+        elif panel_count == 3:
+            if i == 0:
+                move_x = open_ratio * 2 * (p_w - T_pframe)
+            elif i == 1:
+                move_x = open_ratio * 1 * (p_w - T_pframe)
+        elif panel_count == 4:
+            if i == 1 or i == 2:
+                move_x = open_ratio * (p_w - T_pframe) * (1 if i % 2 == 0 else -1)
+
+        x0 = x_start + move_x
+        x1 = x0 + p_w
+        y_s = y_coords[i]
+
+        iy_frame = rg.Interval(y_s, y_s + T_pdepth)
+        glass_y_offset = (T_pdepth - T_glass) / 2.0
+        iy_glass = rg.Interval(y_s + glass_y_offset, y_s + glass_y_offset + T_glass)
+
+        panel_frames = []
+
+        if do_union:
+            panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe)))
+            panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end)))
+            panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start, z_end)))
+            panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start, z_end)))
+
+            unioned_panel = rg.Brep.CreateBooleanUnion(panel_frames, tol)
+            if unioned_panel and len(unioned_panel) > 0:
+                for b in unioned_panel:
+                    parts.append(("frame", b))
+            else:
+                for b in panel_frames:
+                    parts.append(("frame", b))
+        else:
+            panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe)))
+            panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end)))
+            panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe)))
+            panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe)))
+            for b in panel_frames:
+                parts.append(("frame", b))
+
+        parts.append(("glass", make_box(rg.Interval(x0 + T_pframe, x1 - T_pframe), iy_glass, rg.Interval(z_start + T_pframe, z_end - T_pframe))))
+
+    xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, rg.Plane(base_plane))
+    if _safe_bool(settings.get("flip"), False):
+        xform = xform * rg.Transform.Scale(rg.Plane.WorldXY, 1.0, -1.0, 1.0)
+
+    final_parts = []
+    for name, brep in parts:
+        brep.Transform(xform)
+        final_parts.append((name, brep))
+
+    return final_parts
+
+
+def _find_three_non_collinear_indices(points):
+    count = len(points)
+    for i in range(count):
+        for j in range(count):
+            if j == i:
+                continue
+            v1 = points[j] - points[i]
+            if v1.Length < 1e-6:
+                continue
+            for k in range(count):
+                if k == i or k == j:
+                    continue
+                v2 = points[k] - points[i]
+                if v2.Length < 1e-6:
+                    continue
+                cross = rg.Vector3d.CrossProduct(v1, v2)
+                if cross.Length > 1e-6:
+                    return i, j, k
+    return None
+
+
+def _brep_vertex_points(brep):
+    try:
+        return [v.Location for v in brep.Vertices]
+    except:
+        return []
+
+
+def _average_vertex_error(ref_brep, cur_brep, xform):
+    ref_pts = _brep_vertex_points(ref_brep)
+    cur_pts = _brep_vertex_points(cur_brep)
+    if len(ref_pts) != len(cur_pts) or len(ref_pts) < 3:
+        return None
+    total = 0.0
+    for i in range(len(ref_pts)):
+        p = rg.Point3d(ref_pts[i])
+        p.Transform(xform)
+        total += p.DistanceTo(cur_pts[i])
+    return total / float(len(ref_pts))
+
+
+def _direct_brep_vertex_error(ref_brep, cur_brep):
+    """이미 같은 좌표계에 놓인 두 Brep가 실제로 같은 위치인지 직접 비교한다.
+    주의: 여기서는 두 객체 사이의 추가 Transform을 다시 계산하지 않는다.
+    복사본 수정 시 원본까지 삭제되는 문제를 막기 위한 핵심 비교 함수다.
+    """
+    ref_pts = _brep_vertex_points(ref_brep)
+    cur_pts = _brep_vertex_points(cur_brep)
+    if len(ref_pts) != len(cur_pts) or len(ref_pts) < 3:
+        return None
+    total = 0.0
+    for i in range(len(ref_pts)):
+        total += ref_pts[i].DistanceTo(cur_pts[i])
+    return total / float(len(ref_pts))
+
+
+def _geometry_match_tolerance(width=None, height=None):
+    try:
+        doc_tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
+    except:
+        doc_tol = 0.01
+    return max(1.0, doc_tol * 20.0)
+
+
+def _score_xform_against_current_objects(door_id, ref_parts, xform):
+    """후보 Transform이 현재 문 세트 전체와 얼마나 잘 맞는지 점수화한다.
+    같은 door_id를 가진 원본/복사본이 함께 있어도, 변환된 기준 형상과 같은 위치에 있는 객체만 카운트한다.
+    """
+    if not door_id or xform is None or not ref_parts:
+        return 0, None
+
+    tol = _geometry_match_tolerance()
+    candidates = find_all_objects_by_door_id(door_id)
+    matched_ids = []
+    total_error = 0.0
+
+    for obj_id in candidates:
+        cur_brep = get_brep_from_id(obj_id)
+        if not cur_brep:
+            continue
+        try:
+            part_name = rs.GetUserText(obj_id, DOOR_PART_KEY)
+        except:
+            part_name = None
+
+        best_error = None
+        for ref_name, ref_brep in ref_parts:
+            if part_name and ref_name != part_name:
+                continue
+            dup = ref_brep.DuplicateBrep()
+            dup.Transform(xform)
+            error = _direct_brep_vertex_error(dup, cur_brep)
+            if error is None:
+                continue
+            if best_error is None or error < best_error:
+                best_error = error
+
+        if best_error is not None and best_error <= tol:
+            matched_ids.append(obj_id)
+            total_error += best_error
+
+    if not matched_ids:
+        return 0, None
+    return len(_unique_object_ids(matched_ids)), total_error / float(len(matched_ids))
+
+
+def _compute_brep_transform_by_vertices(ref_brep, cur_brep):
+    ref_pts = _brep_vertex_points(ref_brep)
+    cur_pts = _brep_vertex_points(cur_brep)
+
+    if len(ref_pts) != len(cur_pts) or len(ref_pts) < 3:
+        return None, None
+
+    idxs = _find_three_non_collinear_indices(ref_pts)
+    if not idxs:
+        return None, None
+
+    i, j, k = idxs
+    try:
+        ref_plane = rg.Plane(ref_pts[i], ref_pts[j], ref_pts[k])
+        cur_plane = rg.Plane(cur_pts[i], cur_pts[j], cur_pts[k])
+        xform = rg.Transform.PlaneToPlane(ref_plane, cur_plane)
+        error = _average_vertex_error(ref_brep, cur_brep, xform)
+        return xform, error
+    except:
+        return None, None
+
+
+def _resolve_current_edit_data(edit_data):
+    if not edit_data:
+        return edit_data, None
+
+    selected_id = edit_data.get("_selected_id", None)
+    if not selected_id:
+        return edit_data, None
+
+    current_brep = get_brep_from_id(selected_id)
+    if not current_brep:
+        return edit_data, None
+
+    try:
+        base_plane = plane_from_data(edit_data["base_plane"])
+        width = float(edit_data["width"])
+        height = float(edit_data["height"])
+        settings = edit_data.get("settings", {})
+    except:
+        return edit_data, None
+
+    try:
+        selected_part = rs.GetUserText(selected_id, DOOR_PART_KEY)
+    except:
+        selected_part = None
+
+    ref_parts = generate_sliding_door_geometry(base_plane, width, height, settings)
+    door_id = edit_data.get("door_id", None)
+    tol = _geometry_match_tolerance(width, height)
+
+    # 선택 객체 하나만 기준으로 하면 좌우 프레임처럼 같은 형상이 여러 개 있는 경우
+    # 잘못된 기준 부품에서 Transform이 만들어질 수 있다.
+    # 그래서 가능한 Transform 후보들을 만든 뒤, 현재 문 세트 전체와 가장 많이 직접 일치하는 후보를 선택한다.
+    candidates = []
+    for part_name, ref_brep in ref_parts:
+        if selected_part and part_name != selected_part:
+            continue
+        xform, error = _compute_brep_transform_by_vertices(ref_brep, current_brep)
+        if xform is None or error is None or error > tol:
+            continue
+        score, score_error = _score_xform_against_current_objects(door_id, ref_parts, xform)
+        candidates.append((score, score_error if score_error is not None else error, error, xform))
+
+    # 같은 part에서 실패하면 전체 후보를 대상으로 한 번 더 시도한다.
+    if not candidates:
+        for part_name, ref_brep in ref_parts:
+            xform, error = _compute_brep_transform_by_vertices(ref_brep, current_brep)
+            if xform is None or error is None or error > tol:
+                continue
+            score, score_error = _score_xform_against_current_objects(door_id, ref_parts, xform)
+            candidates.append((score, score_error if score_error is not None else error, error, xform))
+
+    if not candidates:
+        return edit_data, None
+
+    # score가 높은 후보가 현재 복사본 세트와 가장 잘 맞는다.
+    # 동점이면 전체 오차와 선택 객체 오차가 작은 쪽을 선택한다.
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    best_score, best_score_error, best_error, best_xform = candidates[0]
+
+    if best_xform is None or best_error is None or best_error > tol:
+        return edit_data, None
+
+    new_plane = rg.Plane(base_plane)
+    new_plane.Transform(best_xform)
+
+    resolved = dict(edit_data)
+    resolved["base_plane"] = plane_to_data(new_plane)
+    resolved["_original_base_plane"] = plane_to_data(base_plane)
+    resolved["_edit_xform"] = best_xform
+    resolved["_reference_parts"] = ref_parts
+    resolved["_edit_match_score"] = best_score
+    return resolved, best_xform
+
+
+def _get_group_sliding_object_ids(selected_id, door_id):
+    ids = []
+    if not selected_id or not door_id:
+        return ids
+
+    group_names = []
+    try:
+        group_names = rs.ObjectGroups(selected_id) or []
+    except:
+        group_names = []
+
+    for group_name in group_names:
+        try:
+            group_ids = rs.ObjectsByGroup(group_name) or []
+        except:
+            group_ids = []
+        for obj_id in group_ids:
+            try:
+                if rs.GetUserText(obj_id, DOOR_ID_KEY) == door_id:
+                    ids.append(obj_id)
+            except:
+                pass
+
+    return _unique_object_ids(ids)
+
+
+def _get_transform_matched_sliding_object_ids(edit_data):
+    ids = []
+    if not edit_data:
+        return ids
+
+    door_id = edit_data.get("door_id", None)
+    xform = edit_data.get("_edit_xform", None)
+    ref_parts = edit_data.get("_reference_parts", None)
+
+    if not door_id or xform is None or not ref_parts:
+        return ids
+
+    tol = _geometry_match_tolerance(edit_data.get("width", None), edit_data.get("height", None))
+    candidates = find_all_objects_by_door_id(door_id)
+
+    for obj_id in candidates:
+        cur_brep = get_brep_from_id(obj_id)
+        if not cur_brep:
+            continue
+
+        try:
+            part_name = rs.GetUserText(obj_id, DOOR_PART_KEY)
+        except:
+            part_name = None
+
+        best_error = None
+        for ref_name, ref_brep in ref_parts:
+            if part_name and ref_name != part_name:
+                continue
+            dup = ref_brep.DuplicateBrep()
+            dup.Transform(xform)
+            # 중요: 여기서는 다시 Transform을 계산하지 않는다.
+            # 변환된 기준 형상과 현재 후보 객체가 같은 위치인지 직접 비교해야 원본이 같이 삭제되지 않는다.
+            error = _direct_brep_vertex_error(dup, cur_brep)
+            if error is None:
+                continue
+            if best_error is None or error < best_error:
+                best_error = error
+
+        if best_error is not None and best_error <= tol:
+            ids.append(obj_id)
+
+    return _unique_object_ids(ids)
+
+
+def _get_spatial_sliding_object_ids(edit_data, selected_id):
+    ids = []
+    if not edit_data or not selected_id:
+        return ids
+
+    door_id = edit_data.get("door_id", None)
+    if not door_id:
+        return ids
+
+    selected_center = get_object_bbox_center(selected_id)
+    if not selected_center:
+        return ids
+
+    try:
+        width = float(edit_data.get("width", 0.0))
+        height = float(edit_data.get("height", 0.0))
+        settings = _normalize_sliding_settings(edit_data.get("settings", {}))
+        depth = _safe_float(settings.get("frame_d"), 200.0)
+        threshold = max(width, height, depth) * 1.25
+    except:
+        threshold = 3000.0
+
+    for obj_id in find_all_objects_by_door_id(door_id):
+        center = get_object_bbox_center(obj_id)
+        if center and center.DistanceTo(selected_center) <= threshold:
+            ids.append(obj_id)
+
+    return _unique_object_ids(ids)
+
+
+def _filter_ids_near_selected(ids, selected_id, edit_data):
+    if not ids or not selected_id:
+        return []
+    selected_center = get_object_bbox_center(selected_id)
+    if not selected_center:
+        return ids
+    try:
+        width = float(edit_data.get("width", 0.0))
+        height = float(edit_data.get("height", 0.0))
+        settings = _normalize_sliding_settings(edit_data.get("settings", {}))
+        depth = _safe_float(settings.get("frame_d"), 200.0)
+        threshold = max(width, height, depth) * 1.10
+    except:
+        threshold = 2500.0
+    result = []
+    for obj_id in ids:
+        center = get_object_bbox_center(obj_id)
+        if center and center.DistanceTo(selected_center) <= threshold:
+            result.append(obj_id)
+    return _unique_object_ids(result)
+
+
+def get_current_sliding_set_ids(edit_data):
+    if not edit_data:
+        return []
+
+    selected_id = edit_data.get("_selected_id", None)
+    door_id = edit_data.get("door_id", None)
+
+    # 1순위: 현재 선택 객체에서 역산한 Transform과 직접 일치하는 객체만 삭제한다.
+    # 이 결과가 있으면 group/spatial 결과를 더하지 않는다. 복사본이 원본과 같은 그룹/door_id를 공유할 수 있기 때문이다.
+    transform_ids = _get_transform_matched_sliding_object_ids(edit_data)
+    if transform_ids:
+        if selected_id:
+            transform_ids.append(selected_id)
+        return _unique_object_ids(transform_ids)
+
+    # 2순위 fallback: Transform 계산이 실패한 경우에만 그룹을 사용한다.
+    # 단, 그룹 복사가 같은 그룹명을 공유할 수 있으므로 선택 객체 주변으로 한 번 더 필터링한다.
+    group_ids = _get_group_sliding_object_ids(selected_id, door_id)
+    if group_ids:
+        filtered = _filter_ids_near_selected(group_ids, selected_id, edit_data)
+        if filtered:
+            return _unique_object_ids(filtered + ([selected_id] if selected_id else []))
+
+    # 3순위 fallback: 공간 기준. 이 역시 Transform 실패 시에만 사용한다.
+    spatial_ids = _get_spatial_sliding_object_ids(edit_data, selected_id)
+    if spatial_ids:
+        if selected_id:
+            spatial_ids.append(selected_id)
+        return _unique_object_ids(spatial_ids)
+
+    return [selected_id] if selected_id else []
+
+
+
+# ==============================================================================
 # [1] 독립형 미리보기 엔진 (실시간 변화 반영)
 # ==============================================================================
 class DoorPreviewConduit(rd.DisplayConduit):
@@ -208,11 +833,15 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         }
 
         if self.initial_settings:
-            self.saved_settings = self.initial_settings
+            self.saved_settings = _normalize_sliding_settings(self.initial_settings)
         else:
-            self.saved_settings = sc.sticky.get("SlidingDoor_Settings", self.default_settings)
+            self.saved_settings = _normalize_sliding_settings(sc.sticky.get("SlidingDoor_Settings", self.default_settings))
+
+        self.presets = load_sliding_presets()
 
         self.layout = forms.DynamicLayout(Spacing=drawing.Size(5, 8), Padding=20)
+        self.SetupPresetUI()
+        self.layout.AddRow(None)
         self.SetupUI()
         self.layout.AddRow(None)
 
@@ -220,12 +849,124 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         btn_ok.Click += self.OnOkClick
 
         btn_cancel = forms.Button(Text="취소")
-        btn_cancel.Click += lambda s,e: self.Close(False)
+        btn_cancel.Click += self.OnCancelClick
 
         self.layout.AddRow(btn_ok, btn_cancel)
         self.Content = self.layout
 
         self.Shown += lambda s, e: self.UpdatePreview()
+
+    def SetupPresetUI(self):
+        self.dd_preset = forms.DropDown()
+        self.dd_preset.Width = 150
+        self.txt_preset_name = forms.TextBox()
+        self.txt_preset_name.Width = 150
+
+        self.btn_preset_load = forms.Button(Text="불러오기")
+        self.btn_preset_save = forms.Button(Text="저장")
+        self.btn_preset_delete = forms.Button(Text="삭제")
+
+        self.btn_preset_load.Click += self.OnPresetLoad
+        self.btn_preset_save.Click += self.OnPresetSave
+        self.btn_preset_delete.Click += self.OnPresetDelete
+
+        self.RefreshPresetDropdown()
+
+        self.layout.AddRow(forms.Label(Text="프리셋 목록:"), self.dd_preset, self.btn_preset_load)
+        self.layout.AddRow(forms.Label(Text="프리셋 이름:"), self.txt_preset_name, self.btn_preset_save, self.btn_preset_delete)
+
+    def RefreshPresetDropdown(self, select_name=None):
+        names = sorted(self.presets.keys())
+        self.dd_preset.DataStore = names
+        if names:
+            if select_name in names:
+                self.dd_preset.SelectedIndex = names.index(select_name)
+            else:
+                self.dd_preset.SelectedIndex = 0
+        else:
+            self.dd_preset.SelectedIndex = -1
+
+    def GetSelectedPresetName(self):
+        try:
+            value = self.dd_preset.SelectedValue
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        except:
+            pass
+        text = str(self.txt_preset_name.Text).strip()
+        return text if text else None
+
+    def ApplySettingsToUI(self, settings):
+        settings = _normalize_sliding_settings(settings)
+
+        cnt = settings.get("panel_count", 2)
+        self.rb_cnt_2.Checked = (cnt == 2)
+        self.rb_cnt_3.Checked = (cnt == 3)
+        self.rb_cnt_4.Checked = (cnt == 4)
+
+        has_threshold = settings.get("has_threshold", True)
+        self.rb_threshold_on.Checked = bool(has_threshold)
+        self.rb_threshold_off.Checked = not bool(has_threshold)
+
+        self.txt_t.Text = str(settings.get("frame_t", "30"))
+        self.txt_d.Text = str(settings.get("frame_d", "200"))
+        self.txt_pframe_t.Text = str(settings.get("pframe_t", "60"))
+
+        self.cb_flip.Checked = bool(settings.get("flip", False))
+        self.cb_union.Checked = bool(settings.get("union", False))
+
+        open_value = _clamp(_safe_int(settings.get("open_value", 0), 0), 0, 100)
+        self.sli_open.Value = int(open_value)
+        self.lbl_open.Text = str(int(open_value)) + "%"
+
+        self.UpdatePreview()
+
+    def OnPresetLoad(self, sender, e):
+        name = self.GetSelectedPresetName()
+        if not name or name not in self.presets:
+            rs.MessageBox("불러올 프리셋을 선택하세요.", 0, "프리셋")
+            return
+
+        self.txt_preset_name.Text = name
+        self.ApplySettingsToUI(self.presets[name])
+
+    def OnPresetSave(self, sender, e):
+        name = str(self.txt_preset_name.Text).strip()
+        if not name:
+            rs.MessageBox("프리셋 이름을 입력하세요.", 0, "프리셋")
+            return
+
+        if name in self.presets:
+            rc = rs.MessageBox("같은 이름의 프리셋이 이미 있습니다.\n현재 값으로 덮어쓰시겠습니까?", 4, "프리셋 저장")
+            if rc != 6:
+                return
+
+        self.presets[name] = self.GetSettingsDict()
+        if save_sliding_presets(self.presets):
+            self.RefreshPresetDropdown(name)
+        else:
+            rs.MessageBox("프리셋 저장에 실패했습니다.", 0, "프리셋 저장")
+
+    def OnPresetDelete(self, sender, e):
+        name = self.GetSelectedPresetName()
+        if not name or name not in self.presets:
+            rs.MessageBox("삭제할 프리셋을 선택하세요.", 0, "프리셋")
+            return
+
+        rc = rs.MessageBox("'{}' 프리셋을 삭제하시겠습니까?".format(name), 4, "프리셋 삭제")
+        if rc != 6:
+            return
+
+        try:
+            del self.presets[name]
+        except:
+            pass
+
+        if save_sliding_presets(self.presets):
+            self.txt_preset_name.Text = ""
+            self.RefreshPresetDropdown()
+        else:
+            rs.MessageBox("프리셋 삭제 저장에 실패했습니다.", 0, "프리셋 삭제")
 
     def SetupUI(self):
         # 1. 문 개수 라디오 버튼 세팅 및 로드
@@ -263,7 +1004,7 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         self.cb_flip = forms.CheckBox(Text="뒤집기", Checked=bool(self.saved_settings.get("flip", False)))
         self.cb_union = forms.CheckBox(Text="프레임 결합", Checked=bool(self.saved_settings.get("union", False)))
 
-        saved_open = int(self.saved_settings.get("open_value", 0))
+        saved_open = _clamp(int(self.saved_settings.get("open_value", 0)), 0, 100)
         self.sli_open = forms.Slider(MinValue=0, MaxValue=100, Value=saved_open)
         self.lbl_open = forms.Label(Text=str(saved_open) + "%")
 
@@ -296,7 +1037,7 @@ class SlidingDoorDialog(forms.Dialog[bool]):
         else:
             current_cnt = 3
 
-        return {
+        return _normalize_sliding_settings({
             "panel_count": int(current_cnt),
             "has_threshold": bool(self.rb_threshold_on.Checked),
             "frame_t": str(self.txt_t.Text),
@@ -305,12 +1046,17 @@ class SlidingDoorDialog(forms.Dialog[bool]):
             "flip": bool(self.cb_flip.Checked),
             "union": bool(self.cb_union.Checked),
             "open_value": int(self.sli_open.Value)
-        }
+        })
 
     def OnOkClick(self, sender, args):
         current_settings = self.GetSettingsDict()
         sc.sticky["SlidingDoor_Settings"] = current_settings
+        self.ClosePreview()
         self.Close(True)
+
+    def OnCancelClick(self, sender, args):
+        self.ClosePreview()
+        self.Close(False)
 
     def GetSafeFloat(self, text, default):
         try:
@@ -319,140 +1065,32 @@ class SlidingDoorDialog(forms.Dialog[bool]):
             return default
 
     def UpdatePreview(self):
-        self.conduit.preview_breps = self.GenerateGeometry()
-        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        try:
+            self.conduit.preview_breps = self.GenerateGeometry()
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        except Exception as ex:
+            print("SlidingDoor preview error:", ex)
 
     def GenerateGeometry(self):
-        W, H = self.width, self.height
-        T_frame = self.GetSafeFloat(self.txt_t.Text, 30.0)
-        D_frame = self.GetSafeFloat(self.txt_d.Text, 200.0)
+        return generate_sliding_door_geometry(self.base_plane, self.width, self.height, self.GetSettingsDict())
 
-        has_threshold = self.rb_threshold_on.Checked
-        do_union = self.cb_union.Checked
-
-        if self.rb_cnt_4.Checked:
-            panel_count = 4
-        elif self.rb_cnt_3.Checked:
-            panel_count = 3
-        else:
-            panel_count = 2
-
-        T_pframe = self.GetSafeFloat(self.txt_pframe_t.Text, 60.0)
-        T_pdepth = 30.0
-        T_glass = 10.0
-
-        open_ratio = self.sli_open.Value / 100.0
-        parts = []
-        tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
-
-        outer_frames = []
-        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, T_frame), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
-        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(W - T_frame, W), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
-
-        if do_union:
-            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
-            if has_threshold:
-                outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
-        else:
-            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
-            if has_threshold:
-                outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
-
-        if do_union:
-            unioned_outer = rg.Brep.CreateBooleanUnion(outer_frames, tol)
-            if unioned_outer and len(unioned_outer) > 0:
-                for b in unioned_outer:
-                    parts.append(("frame", b))
-            else:
-                for b in outer_frames:
-                    parts.append(("frame", b))
-        else:
-            for b in outer_frames:
-                parts.append(("frame", b))
-
-        z_start = T_frame if has_threshold else 0.0
-        z_end = H - T_frame
-        total_w = W - (2 * T_frame)
-
-        num_overlaps = 2 if panel_count in [3, 4] else 1
-        p_w = (total_w + num_overlaps * T_pframe) / panel_count
-
-        if panel_count == 2:
-            y_coords = [30.0, 60.0]
-            x_starts = [T_frame, T_frame + p_w - T_pframe]
-        elif panel_count == 3:
-            y_coords = [30.0, 60.0, 90.0]
-            x_starts = [T_frame, T_frame + p_w - T_pframe, T_frame + 2 * p_w - 2 * T_pframe]
-        else:
-            y_coords = [30.0, 60.0, 60.0, 30.0]
-            x_starts = [T_frame, T_frame + p_w - T_pframe, T_frame + 2 * p_w - T_pframe, T_frame + 3 * p_w - 2 * T_pframe]
-
-        for i in range(panel_count):
-            x_start = x_starts[i]
-            move_x = 0
-
-            if panel_count == 2:
-                if i == 0:
-                    move_x = open_ratio * (p_w - T_pframe)
-            elif panel_count == 3:
-                if i == 0:
-                    move_x = open_ratio * 2 * (p_w - T_pframe)
-                elif i == 1:
-                    move_x = open_ratio * 1 * (p_w - T_pframe)
-            elif panel_count == 4:
-                if i == 1 or i == 2:
-                    move_x = open_ratio * (p_w - T_pframe) * (1 if i % 2 == 0 else -1)
-
-            x0 = x_start + move_x
-            x1 = x0 + p_w
-            y_s = y_coords[i]
-
-            def make_box(ix, iy, iz):
-                return rg.Box(rg.Plane.WorldXY, ix, iy, iz).ToBrep()
-
-            iy_frame = rg.Interval(y_s, y_s + T_pdepth)
-            glass_y_offset = (T_pdepth - T_glass) / 2.0
-            iy_glass = rg.Interval(y_s + glass_y_offset, y_s + glass_y_offset + T_glass)
-
-            panel_frames = []
-
-            if do_union:
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe)))
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end)))
-                panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start, z_end)))
-                panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start, z_end)))
-
-                unioned_panel = rg.Brep.CreateBooleanUnion(panel_frames, tol)
-                if unioned_panel and len(unioned_panel) > 0:
-                    for b in unioned_panel:
-                        parts.append(("frame", b))
-                else:
-                    for b in panel_frames:
-                        parts.append(("frame", b))
-            else:
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_start, z_start + T_pframe)))
-                panel_frames.append(make_box(rg.Interval(x0, x1), iy_frame, rg.Interval(z_end - T_pframe, z_end)))
-                panel_frames.append(make_box(rg.Interval(x0, x0 + T_pframe), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe)))
-                panel_frames.append(make_box(rg.Interval(x1 - T_pframe, x1), iy_frame, rg.Interval(z_start + T_pframe, z_end - T_pframe)))
-                for b in panel_frames:
-                    parts.append(("frame", b))
-
-            parts.append(("glass", make_box(rg.Interval(x0 + T_pframe, x1 - T_pframe), iy_glass, rg.Interval(z_start + T_pframe, z_end - T_pframe))))
-
-        xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, rg.Plane(self.base_plane))
-        if self.cb_flip.Checked:
-            xform = xform * rg.Transform.Scale(rg.Plane.WorldXY, 1.0, -1.0, 1.0)
-
-        final_parts = []
-        for n, b in parts:
-            b.Transform(xform)
-            final_parts.append((n, b))
-
-        return final_parts
+    def ClosePreview(self):
+        try:
+            self.conduit.Enabled = False
+            self.conduit.preview_breps = []
+        except:
+            pass
+        try:
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        except:
+            pass
 
     def OnClosed(self, e):
-        self.conduit.Enabled = False
-        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        self.ClosePreview()
+        try:
+            super(SlidingDoorDialog, self).OnClosed(e)
+        except:
+            pass
 
 # ==============================================================================
 # [3] 입력 방식 분기 처리용 로직
@@ -642,8 +1280,10 @@ def get_door_target_from_user():
 # ==============================================================================
 def bake_or_update_sliding_door(dlg, edit_data=None):
     if edit_data and edit_data.get("door_id"):
-        door_id = edit_data.get("door_id")
-        old_object_ids = find_all_objects_by_door_id(door_id)
+        # 복사본까지 같은 door_id를 공유할 수 있으므로,
+        # 수정 시에는 선택된 현재 세트만 삭제하고 새 door_id를 부여한다.
+        door_id = str(System.Guid.NewGuid())
+        old_object_ids = get_current_sliding_set_ids(edit_data)
     else:
         door_id = str(System.Guid.NewGuid())
         old_object_ids = []
@@ -653,10 +1293,10 @@ def bake_or_update_sliding_door(dlg, edit_data=None):
 
     rs.EnableRedraw(False)
 
-    # 수정 모드에서는 같은 door_id를 가진 기존 미닫이문 구성 객체를 모두 삭제한 뒤 다시 생성한다.
+    # 수정 모드에서는 현재 선택된 미닫이문 세트만 삭제한 뒤 다시 생성한다.
     # 패널 수처럼 객체 개수가 달라지는 설정도 안전하게 반영된다.
     if old_object_ids:
-        rs.DeleteObjects(old_object_ids)
+        _delete_object_ids(old_object_ids)
 
     group_name = rs.AddGroup()
     baked_object_ids = []
@@ -706,8 +1346,18 @@ def main():
             rs.MessageBox("선택한 미닫이문의 저장 데이터가 손상되어 수정할 수 없습니다.", 0, "데이터 오류")
             return
 
+        edit_data, _ = _resolve_current_edit_data(edit_data)
+        try:
+            base_plane = plane_from_data(edit_data["base_plane"])
+        except:
+            pass
+
         dlg = SlidingDoorDialog(base_plane, width, height, settings, True)
-        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+        try:
+            rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+        finally:
+            try: dlg.ClosePreview()
+            except: pass
 
         if rc:
             bake_or_update_sliding_door(dlg, edit_data)
@@ -736,8 +1386,18 @@ def main():
             rs.MessageBox("선택한 미닫이문의 저장 데이터가 손상되어 수정할 수 없습니다.", 0, "데이터 오류")
             return
 
+        edit_data, _ = _resolve_current_edit_data(edit_data)
+        try:
+            base_plane = plane_from_data(edit_data["base_plane"])
+        except:
+            pass
+
         dlg = SlidingDoorDialog(base_plane, width, height, settings, True)
-        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+        try:
+            rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+        finally:
+            try: dlg.ClosePreview()
+            except: pass
 
         if rc:
             bake_or_update_sliding_door(dlg, edit_data)
@@ -749,7 +1409,11 @@ def main():
         height = target.get("height")
 
         dlg = SlidingDoorDialog(base_plane, width, height, None, False)
-        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+        try:
+            rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+        finally:
+            try: dlg.ClosePreview()
+            except: pass
 
         if rc:
             bake_or_update_sliding_door(dlg, None)

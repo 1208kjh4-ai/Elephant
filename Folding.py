@@ -9,6 +9,7 @@ import scriptcontext as sc
 import System
 import math
 import json
+import os
 
 # ==============================================================================
 # 폴딩도어 식별 / 재수정용 UserText Key
@@ -79,6 +80,7 @@ def find_existing_door_from_selection():
     for obj_id in selected:
         data = read_door_data_from_object(obj_id)
         if data:
+            data["_selected_id"] = obj_id
             return data
 
     return None
@@ -124,6 +126,627 @@ def clear_selection_and_redraw():
     except:
         pass
 
+
+# ==============================================================================
+# [0-1] 프리셋 / Transform / 세트 판별 유틸리티
+# ==============================================================================
+def _get_appdata_folder():
+    try:
+        base = os.environ.get("APPDATA", None)
+        if not base:
+            base = os.path.expanduser("~")
+        folder = os.path.join(base, "ElephantTools")
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        return folder
+    except:
+        return None
+
+
+def _get_preset_file_path():
+    folder = _get_appdata_folder()
+    if not folder:
+        return None
+    return os.path.join(folder, "FoldingDoorPresets.json")
+
+
+def load_folding_presets():
+    path = _get_preset_file_path()
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except:
+        return {}
+
+
+def save_folding_presets(presets):
+    path = _get_preset_file_path()
+    if not path:
+        return False
+    try:
+        with open(path, "w") as f:
+            json.dump(presets, f, indent=2, sort_keys=True)
+        return True
+    except Exception as ex:
+        print("FoldingDoor preset save error:", ex)
+        return False
+
+
+def _safe_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ["1", "true", "yes", "y", "on"]
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(float(value))
+    except:
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except:
+        return default
+
+
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def _normalize_folding_settings(settings):
+    s = dict(settings or {})
+    num_panels = _clamp(_safe_int(s.get("num_panels", 4), 4), 2, 18)
+    open_ratio = _clamp(_safe_int(s.get("open_ratio", 0), 0), 0, 100)
+    return {
+        "num_panels": int(num_panels),
+        "is_single_open": _safe_bool(s.get("is_single_open", True), True),
+        "has_threshold": _safe_bool(s.get("has_threshold", True), True),
+        "frame_t": str(s.get("frame_t", "30")),
+        "frame_d": str(s.get("frame_d", "200")),
+        "pframe_t": str(s.get("pframe_t", "60")),
+        "flip": _safe_bool(s.get("flip", False), False),
+        "union": _safe_bool(s.get("union", False), False),
+        "open_ratio": int(open_ratio)
+    }
+
+
+def get_brep_from_id(obj_id):
+    try:
+        return rs.coercebrep(obj_id)
+    except:
+        try:
+            return rs.coercebrep(System.Guid(str(obj_id)))
+        except:
+            return None
+
+
+def get_object_bbox_center(obj_id):
+    brep = get_brep_from_id(obj_id)
+    if not brep:
+        return None
+    try:
+        return brep.GetBoundingBox(True).Center
+    except:
+        return None
+
+
+def _unique_object_ids(ids):
+    result = []
+    seen = set()
+    for obj_id in ids or []:
+        key = str(obj_id)
+        if key not in seen:
+            seen.add(key)
+            result.append(obj_id)
+    return result
+
+
+def _delete_object_ids(ids):
+    for obj_id in _unique_object_ids(ids):
+        try:
+            sc.doc.Objects.Delete(System.Guid(str(obj_id)), True)
+        except:
+            try:
+                rs.DeleteObject(obj_id)
+            except:
+                pass
+
+
+def generate_folding_door_geometry(base_plane, width, height, settings):
+    settings = _normalize_folding_settings(settings)
+    W, H = float(width), float(height)
+    T_frame = _safe_float(settings.get("frame_t"), 30.0)
+    D_frame = _safe_float(settings.get("frame_d"), 200.0)
+
+    has_threshold = _safe_bool(settings.get("has_threshold"), True)
+    panel_count = _safe_int(settings.get("num_panels"), 4)
+    panel_count = _clamp(panel_count, 2, 18)
+    do_union = _safe_bool(settings.get("union"), False)
+    is_bi_parting = not _safe_bool(settings.get("is_single_open"), True)
+
+    T_pframe = _safe_float(settings.get("pframe_t"), 60.0)
+    T_pdepth = 30.0
+    T_glass = 10.0
+    open_ratio = _clamp(_safe_int(settings.get("open_ratio"), 0), 0, 100) / 100.0
+
+    parts = []
+    tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
+
+    outer_frames = []
+    outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, T_frame), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
+    outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(W - T_frame, W), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
+
+    if do_union:
+        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
+        if has_threshold:
+            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
+    else:
+        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
+        if has_threshold:
+            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
+
+    if do_union:
+        unioned_outer = rg.Brep.CreateBooleanUnion(outer_frames, tol)
+        if unioned_outer and len(unioned_outer) > 0:
+            for b in unioned_outer:
+                parts.append(("frame", b))
+        else:
+            for b in outer_frames:
+                parts.append(("frame", b))
+    else:
+        for b in outer_frames:
+            parts.append(("frame", b))
+
+    z_start = T_frame if has_threshold else 0.0
+    z_end = H - T_frame
+    p_h = z_end - z_start
+    total_inner_w = W - (2 * T_frame)
+    p_w = total_inner_w / float(panel_count)
+
+    max_angle = math.radians(85)
+    theta = max_angle * open_ratio
+
+    def make_box(ix, iy, iz):
+        return rg.Box(rg.Plane.WorldXY, ix, iy, iz).ToBrep()
+
+    if is_bi_parting:
+        left_count = panel_count // 2
+        right_count = panel_count - left_count
+    else:
+        left_count = panel_count
+        right_count = 0
+
+    for group_idx, count in enumerate([left_count, right_count]):
+        if count == 0:
+            continue
+
+        P_hinge = rg.Point3d(0, 0, 0)
+
+        for i in range(count):
+            start_idx = len(parts)
+
+            if i % 2 == 0:
+                alpha_i = -theta
+                local_pivot = rg.Point3d(0, 0, 0)
+                next_local_pivot = rg.Point3d(p_w, T_pdepth, 0)
+            else:
+                alpha_i = theta
+                local_pivot = rg.Point3d(0, T_pdepth, 0)
+                next_local_pivot = rg.Point3d(p_w, 0, 0)
+
+            panel_frames = []
+            iy_frame = rg.Interval(0, T_pdepth)
+            glass_y_offset = (T_pdepth - T_glass) / 2.0
+            iy_glass = rg.Interval(glass_y_offset, glass_y_offset + T_glass)
+
+            if do_union:
+                panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(0, T_pframe)))
+                panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(p_h - T_pframe, p_h)))
+                panel_frames.append(make_box(rg.Interval(0, T_pframe), iy_frame, rg.Interval(0, p_h)))
+                panel_frames.append(make_box(rg.Interval(p_w - T_pframe, p_w), iy_frame, rg.Interval(0, p_h)))
+
+                unioned_panel = rg.Brep.CreateBooleanUnion(panel_frames, tol)
+                if unioned_panel and len(unioned_panel) > 0:
+                    for b in unioned_panel:
+                        parts.append(("frame", b))
+                else:
+                    for b in panel_frames:
+                        parts.append(("frame", b))
+            else:
+                panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(0, T_pframe)))
+                panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(p_h - T_pframe, p_h)))
+                panel_frames.append(make_box(rg.Interval(0, T_pframe), iy_frame, rg.Interval(T_pframe, p_h - T_pframe)))
+                panel_frames.append(make_box(rg.Interval(p_w - T_pframe, p_w), iy_frame, rg.Interval(T_pframe, p_h - T_pframe)))
+                for b in panel_frames:
+                    parts.append(("frame", b))
+
+            parts.append(("glass", make_box(rg.Interval(T_pframe, p_w - T_pframe), iy_glass, rg.Interval(T_pframe, p_h - T_pframe))))
+
+            rot_xform = rg.Transform.Rotation(alpha_i, rg.Vector3d.ZAxis, rg.Point3d.Origin)
+
+            rotated_pivot = rg.Point3d(local_pivot)
+            rotated_pivot.Transform(rot_xform)
+
+            tx = P_hinge.X - rotated_pivot.X
+            ty = P_hinge.Y - rotated_pivot.Y
+            tz = P_hinge.Z - rotated_pivot.Z
+            trans_xform = rg.Transform.Translation(tx, ty, tz)
+            panel_xform = trans_xform * rot_xform
+            offset_xform = rg.Transform.Translation(T_frame, (D_frame - T_pdepth) / 2.0, z_start)
+            final_panel_xform = offset_xform * panel_xform
+
+            if group_idx == 1:
+                center_x = T_frame + total_inner_w / 2.0
+                mirror_plane = rg.Plane(rg.Point3d(center_x, 0, 0), rg.Vector3d.XAxis)
+                mirror_xform = rg.Transform.Mirror(mirror_plane)
+                final_panel_xform = mirror_xform * final_panel_xform
+
+            for j in range(start_idx, len(parts)):
+                parts[j][1].Transform(final_panel_xform)
+
+            next_hinge_rotated = rg.Point3d(next_local_pivot)
+            next_hinge_rotated.Transform(rot_xform)
+            P_hinge = rg.Point3d(next_hinge_rotated.X + tx, next_hinge_rotated.Y + ty, next_hinge_rotated.Z + tz)
+
+    global_xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, rg.Plane(base_plane))
+    if _safe_bool(settings.get("flip"), False):
+        global_xform = global_xform * rg.Transform.Scale(rg.Plane.WorldXY, 1.0, -1.0, 1.0)
+
+    final_parts = []
+    for name, brep in parts:
+        brep.Transform(global_xform)
+        final_parts.append((name, brep))
+
+    return final_parts
+
+
+def _find_three_non_collinear_indices(points):
+    count = len(points)
+    for i in range(count):
+        for j in range(count):
+            if j == i:
+                continue
+            v1 = points[j] - points[i]
+            if v1.Length < 1e-6:
+                continue
+            for k in range(count):
+                if k == i or k == j:
+                    continue
+                v2 = points[k] - points[i]
+                if v2.Length < 1e-6:
+                    continue
+                cross = rg.Vector3d.CrossProduct(v1, v2)
+                if cross.Length > 1e-6:
+                    return i, j, k
+    return None
+
+
+def _brep_vertex_points(brep):
+    try:
+        return [v.Location for v in brep.Vertices]
+    except:
+        return []
+
+
+def _average_vertex_error(ref_brep, cur_brep, xform):
+    ref_pts = _brep_vertex_points(ref_brep)
+    cur_pts = _brep_vertex_points(cur_brep)
+    if len(ref_pts) != len(cur_pts) or len(ref_pts) < 3:
+        return None
+    total = 0.0
+    for i in range(len(ref_pts)):
+        p = rg.Point3d(ref_pts[i])
+        p.Transform(xform)
+        total += p.DistanceTo(cur_pts[i])
+    return total / float(len(ref_pts))
+
+
+def _direct_brep_vertex_error(ref_brep, cur_brep):
+    """이미 같은 좌표계에 놓인 두 Brep가 실제로 같은 위치인지 직접 비교한다.
+    여기서는 두 객체 사이의 추가 Transform을 다시 계산하지 않는다.
+    """
+    ref_pts = _brep_vertex_points(ref_brep)
+    cur_pts = _brep_vertex_points(cur_brep)
+    if len(ref_pts) != len(cur_pts) or len(ref_pts) < 3:
+        return None
+    total = 0.0
+    for i in range(len(ref_pts)):
+        total += ref_pts[i].DistanceTo(cur_pts[i])
+    return total / float(len(ref_pts))
+
+
+def _geometry_match_tolerance(width=None, height=None):
+    try:
+        doc_tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
+    except:
+        doc_tol = 0.01
+    return max(1.0, doc_tol * 20.0)
+
+
+def _score_xform_against_current_objects(door_id, ref_parts, xform):
+    if not door_id or xform is None or not ref_parts:
+        return 0, None
+
+    tol = _geometry_match_tolerance()
+    candidates = find_all_objects_by_door_id(door_id)
+    matched_ids = []
+    total_error = 0.0
+
+    for obj_id in candidates:
+        cur_brep = get_brep_from_id(obj_id)
+        if not cur_brep:
+            continue
+        try:
+            part_name = rs.GetUserText(obj_id, DOOR_PART_KEY)
+        except:
+            part_name = None
+
+        best_error = None
+        for ref_name, ref_brep in ref_parts:
+            if part_name and ref_name != part_name:
+                continue
+            dup = ref_brep.DuplicateBrep()
+            dup.Transform(xform)
+            error = _direct_brep_vertex_error(dup, cur_brep)
+            if error is None:
+                continue
+            if best_error is None or error < best_error:
+                best_error = error
+
+        if best_error is not None and best_error <= tol:
+            matched_ids.append(obj_id)
+            total_error += best_error
+
+    if not matched_ids:
+        return 0, None
+    return len(_unique_object_ids(matched_ids)), total_error / float(len(matched_ids))
+
+
+def _compute_brep_transform_by_vertices(ref_brep, cur_brep):
+    ref_pts = _brep_vertex_points(ref_brep)
+    cur_pts = _brep_vertex_points(cur_brep)
+
+    if len(ref_pts) != len(cur_pts) or len(ref_pts) < 3:
+        return None, None
+
+    idxs = _find_three_non_collinear_indices(ref_pts)
+    if not idxs:
+        return None, None
+
+    i, j, k = idxs
+    try:
+        ref_plane = rg.Plane(ref_pts[i], ref_pts[j], ref_pts[k])
+        cur_plane = rg.Plane(cur_pts[i], cur_pts[j], cur_pts[k])
+        xform = rg.Transform.PlaneToPlane(ref_plane, cur_plane)
+        error = _average_vertex_error(ref_brep, cur_brep, xform)
+        return xform, error
+    except:
+        return None, None
+
+
+def _resolve_current_edit_data(edit_data):
+    if not edit_data:
+        return edit_data, None
+
+    selected_id = edit_data.get("_selected_id", None)
+    if not selected_id:
+        return edit_data, None
+
+    current_brep = get_brep_from_id(selected_id)
+    if not current_brep:
+        return edit_data, None
+
+    try:
+        base_plane = plane_from_data(edit_data["base_plane"])
+        width = float(edit_data["width"])
+        height = float(edit_data["height"])
+        settings = edit_data.get("settings", {})
+    except:
+        return edit_data, None
+
+    try:
+        selected_part = rs.GetUserText(selected_id, DOOR_PART_KEY)
+    except:
+        selected_part = None
+
+    ref_parts = generate_folding_door_geometry(base_plane, width, height, settings)
+    door_id = edit_data.get("door_id", None)
+    tol = _geometry_match_tolerance(width, height)
+
+    candidates = []
+    for part_name, ref_brep in ref_parts:
+        if selected_part and part_name != selected_part:
+            continue
+        xform, error = _compute_brep_transform_by_vertices(ref_brep, current_brep)
+        if xform is None or error is None or error > tol:
+            continue
+        score, score_error = _score_xform_against_current_objects(door_id, ref_parts, xform)
+        candidates.append((score, score_error if score_error is not None else error, error, xform))
+
+    if not candidates:
+        for part_name, ref_brep in ref_parts:
+            xform, error = _compute_brep_transform_by_vertices(ref_brep, current_brep)
+            if xform is None or error is None or error > tol:
+                continue
+            score, score_error = _score_xform_against_current_objects(door_id, ref_parts, xform)
+            candidates.append((score, score_error if score_error is not None else error, error, xform))
+
+    if not candidates:
+        return edit_data, None
+
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    best_score, best_score_error, best_error, best_xform = candidates[0]
+
+    if best_xform is None or best_error is None or best_error > tol:
+        return edit_data, None
+
+    new_plane = rg.Plane(base_plane)
+    new_plane.Transform(best_xform)
+
+    resolved = dict(edit_data)
+    resolved["base_plane"] = plane_to_data(new_plane)
+    resolved["_original_base_plane"] = plane_to_data(base_plane)
+    resolved["_edit_xform"] = best_xform
+    resolved["_reference_parts"] = ref_parts
+    resolved["_edit_match_score"] = best_score
+    return resolved, best_xform
+
+
+def _get_group_folding_object_ids(selected_id, door_id):
+    ids = []
+    if not selected_id or not door_id:
+        return ids
+
+    group_names = []
+    try:
+        group_names = rs.ObjectGroups(selected_id) or []
+    except:
+        group_names = []
+
+    for group_name in group_names:
+        try:
+            group_ids = rs.ObjectsByGroup(group_name) or []
+        except:
+            group_ids = []
+        for obj_id in group_ids:
+            try:
+                if rs.GetUserText(obj_id, DOOR_ID_KEY) == door_id:
+                    ids.append(obj_id)
+            except:
+                pass
+
+    return _unique_object_ids(ids)
+
+
+def _get_transform_matched_folding_object_ids(edit_data):
+    ids = []
+    if not edit_data:
+        return ids
+
+    door_id = edit_data.get("door_id", None)
+    xform = edit_data.get("_edit_xform", None)
+    ref_parts = edit_data.get("_reference_parts", None)
+
+    if not door_id or xform is None or not ref_parts:
+        return ids
+
+    tol = _geometry_match_tolerance(edit_data.get("width", None), edit_data.get("height", None))
+    candidates = find_all_objects_by_door_id(door_id)
+
+    for obj_id in candidates:
+        cur_brep = get_brep_from_id(obj_id)
+        if not cur_brep:
+            continue
+        try:
+            part_name = rs.GetUserText(obj_id, DOOR_PART_KEY)
+        except:
+            part_name = None
+
+        best_error = None
+        for ref_name, ref_brep in ref_parts:
+            if part_name and ref_name != part_name:
+                continue
+            dup = ref_brep.DuplicateBrep()
+            dup.Transform(xform)
+            error = _direct_brep_vertex_error(dup, cur_brep)
+            if error is None:
+                continue
+            if best_error is None or error < best_error:
+                best_error = error
+
+        if best_error is not None and best_error <= tol:
+            ids.append(obj_id)
+
+    return _unique_object_ids(ids)
+
+
+def _get_spatial_folding_object_ids(edit_data, selected_id):
+    ids = []
+    if not edit_data or not selected_id:
+        return ids
+
+    door_id = edit_data.get("door_id", None)
+    if not door_id:
+        return ids
+
+    selected_center = get_object_bbox_center(selected_id)
+    if not selected_center:
+        return ids
+
+    try:
+        width = float(edit_data.get("width", 0.0))
+        height = float(edit_data.get("height", 0.0))
+        settings = _normalize_folding_settings(edit_data.get("settings", {}))
+        depth = _safe_float(settings.get("frame_d"), 200.0)
+        threshold = max(width, height, depth) * 1.25
+    except:
+        threshold = 3000.0
+
+    for obj_id in find_all_objects_by_door_id(door_id):
+        center = get_object_bbox_center(obj_id)
+        if center and center.DistanceTo(selected_center) <= threshold:
+            ids.append(obj_id)
+
+    return _unique_object_ids(ids)
+
+
+def _filter_ids_near_selected(ids, selected_id, edit_data):
+    if not ids or not selected_id:
+        return []
+    selected_center = get_object_bbox_center(selected_id)
+    if not selected_center:
+        return ids
+    try:
+        width = float(edit_data.get("width", 0.0))
+        height = float(edit_data.get("height", 0.0))
+        settings = _normalize_folding_settings(edit_data.get("settings", {}))
+        depth = _safe_float(settings.get("frame_d"), 200.0)
+        threshold = max(width, height, depth) * 1.10
+    except:
+        threshold = 2500.0
+    result = []
+    for obj_id in ids:
+        center = get_object_bbox_center(obj_id)
+        if center and center.DistanceTo(selected_center) <= threshold:
+            result.append(obj_id)
+    return _unique_object_ids(result)
+
+
+def get_current_folding_set_ids(edit_data):
+    if not edit_data:
+        return []
+
+    selected_id = edit_data.get("_selected_id", None)
+    door_id = edit_data.get("door_id", None)
+
+    transform_ids = _get_transform_matched_folding_object_ids(edit_data)
+    if transform_ids:
+        if selected_id:
+            transform_ids.append(selected_id)
+        return _unique_object_ids(transform_ids)
+
+    group_ids = _get_group_folding_object_ids(selected_id, door_id)
+    if group_ids:
+        filtered = _filter_ids_near_selected(group_ids, selected_id, edit_data)
+        if filtered:
+            return _unique_object_ids(filtered + ([selected_id] if selected_id else []))
+
+    spatial_ids = _get_spatial_folding_object_ids(edit_data, selected_id)
+    if spatial_ids:
+        if selected_id:
+            spatial_ids.append(selected_id)
+        return _unique_object_ids(spatial_ids)
+
+    return [selected_id] if selected_id else []
+
 # ==============================================================================
 # [1] 독립형 미리보기 엔진 (실시간 변화 반영)
 # ==============================================================================
@@ -142,6 +765,7 @@ class DoorPreviewConduit(rd.DisplayConduit):
                 e.Display.DrawBrepShaded(brep, mat)
                 e.Display.DrawBrepWires(brep, System.Drawing.Color.Black, 1)
 
+
 # ==============================================================================
 # [2] 폴딩도어 전용 다이얼로그
 # ==============================================================================
@@ -154,7 +778,28 @@ class FoldingDoorDialog(forms.Dialog[bool]):
         self.conduit = DoorPreviewConduit()
         self.conduit.Enabled = True
 
+        self.default_settings = {
+            "num_panels": 4,
+            "is_single_open": True,
+            "has_threshold": True,
+            "frame_t": "30",
+            "frame_d": "200",
+            "pframe_t": "60",
+            "flip": False,
+            "union": False,
+            "open_ratio": 0
+        }
+
+        if self.initial_settings:
+            self.saved_settings = _normalize_folding_settings(self.initial_settings)
+        else:
+            self.saved_settings = _normalize_folding_settings(sc.sticky.get("FoldingDoor_Settings", self.default_settings))
+
+        self.presets = load_folding_presets()
+
         self.layout = forms.DynamicLayout(Spacing=drawing.Size(5, 8), Padding=20)
+        self.SetupPresetUI()
+        self.layout.AddRow(None)
         self.SetupUI()
         self.layout.AddRow(None)
 
@@ -162,40 +807,152 @@ class FoldingDoorDialog(forms.Dialog[bool]):
         btn_ok.Click += self.OnOkClicked
 
         btn_cancel = forms.Button(Text="취소")
-        btn_cancel.Click += lambda s, e: self.Close(False)
+        btn_cancel.Click += self.OnCancelClick
 
         self.layout.AddRow(btn_ok, btn_cancel)
         self.Content = self.layout
 
         self.Shown += lambda s, e: self.UpdatePreview()
 
-    def SetupUI(self):
-        if self.initial_settings:
-            s = self.initial_settings
+    def SetupPresetUI(self):
+        self.dd_preset = forms.DropDown()
+        self.dd_preset.Width = 150
+        self.txt_preset_name = forms.TextBox()
+        self.txt_preset_name.Width = 150
+
+        self.btn_preset_load = forms.Button(Text="불러오기")
+        self.btn_preset_save = forms.Button(Text="저장")
+        self.btn_preset_delete = forms.Button(Text="삭제")
+
+        self.btn_preset_load.Click += self.OnPresetLoad
+        self.btn_preset_save.Click += self.OnPresetSave
+        self.btn_preset_delete.Click += self.OnPresetDelete
+
+        self.RefreshPresetDropdown()
+
+        self.layout.AddRow(forms.Label(Text="프리셋 목록:"), self.dd_preset, self.btn_preset_load)
+        self.layout.AddRow(forms.Label(Text="프리셋 이름:"), self.txt_preset_name, self.btn_preset_save, self.btn_preset_delete)
+
+    def RefreshPresetDropdown(self, select_name=None):
+        names = sorted(self.presets.keys())
+        self.dd_preset.DataStore = names
+        if names:
+            if select_name in names:
+                self.dd_preset.SelectedIndex = names.index(select_name)
+            else:
+                self.dd_preset.SelectedIndex = 0
         else:
-            s = sc.sticky.get("FoldingDoor_Settings", {})
+            self.dd_preset.SelectedIndex = -1
+
+    def GetSelectedPresetName(self):
+        try:
+            value = self.dd_preset.SelectedValue
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        except:
+            pass
+        text = str(self.txt_preset_name.Text).strip()
+        return text if text else None
+
+    def ApplySettingsToUI(self, settings):
+        settings = _normalize_folding_settings(settings)
+
+        self.num_panels.Value = int(settings.get("num_panels", 4))
+
+        is_single = bool(settings.get("is_single_open", True))
+        self.rb_open_1.Checked = is_single
+        self.rb_open_2.Checked = not is_single
+
+        has_threshold = bool(settings.get("has_threshold", True))
+        self.rb_threshold_on.Checked = has_threshold
+        self.rb_threshold_off.Checked = not has_threshold
+
+        self.txt_t.Text = str(settings.get("frame_t", "30"))
+        self.txt_d.Text = str(settings.get("frame_d", "200"))
+        self.txt_pframe_t.Text = str(settings.get("pframe_t", "60"))
+
+        self.cb_flip.Checked = bool(settings.get("flip", False))
+        self.cb_union.Checked = bool(settings.get("union", False))
+
+        open_ratio = _clamp(_safe_int(settings.get("open_ratio", 0), 0), 0, 100)
+        self.sli_open.Value = int(open_ratio)
+        self.lbl_open.Text = str(int(open_ratio)) + "%"
+
+        self.UpdatePreview()
+
+    def OnPresetLoad(self, sender, e):
+        name = self.GetSelectedPresetName()
+        if not name or name not in self.presets:
+            rs.MessageBox("불러올 프리셋을 선택하세요.", 0, "프리셋")
+            return
+        self.txt_preset_name.Text = name
+        self.ApplySettingsToUI(self.presets[name])
+
+    def OnPresetSave(self, sender, e):
+        name = str(self.txt_preset_name.Text).strip()
+        if not name:
+            rs.MessageBox("프리셋 이름을 입력하세요.", 0, "프리셋")
+            return
+        if name in self.presets:
+            rc = rs.MessageBox("같은 이름의 프리셋이 이미 있습니다.\n현재 값으로 덮어쓰시겠습니까?", 4, "프리셋 저장")
+            if rc != 6:
+                return
+        self.presets[name] = self.GetSettingsDict()
+        if save_folding_presets(self.presets):
+            self.RefreshPresetDropdown(name)
+        else:
+            rs.MessageBox("프리셋 저장에 실패했습니다.", 0, "프리셋 저장")
+
+    def OnPresetDelete(self, sender, e):
+        name = self.GetSelectedPresetName()
+        if not name or name not in self.presets:
+            rs.MessageBox("삭제할 프리셋을 선택하세요.", 0, "프리셋")
+            return
+        rc = rs.MessageBox("'{}' 프리셋을 삭제하시겠습니까?".format(name), 4, "프리셋 삭제")
+        if rc != 6:
+            return
+        try:
+            del self.presets[name]
+        except:
+            pass
+        if save_folding_presets(self.presets):
+            self.txt_preset_name.Text = ""
+            self.RefreshPresetDropdown()
+        else:
+            rs.MessageBox("프리셋 삭제 저장에 실패했습니다.", 0, "프리셋 삭제")
+
+    def SetupUI(self):
+        s = self.saved_settings
 
         self.num_panels = forms.NumericStepper(Value=int(s.get("num_panels", 4)), MinValue=2, MaxValue=18)
 
         self.rb_open_1 = forms.RadioButton(Text="한쪽 열림")
         self.rb_open_2 = forms.RadioButton(self.rb_open_1, Text="양쪽 열림")
-        if s.get("is_single_open", True): self.rb_open_1.Checked = True
-        else: self.rb_open_2.Checked = True
+        if s.get("is_single_open", True):
+            self.rb_open_1.Checked = True
+        else:
+            self.rb_open_2.Checked = True
 
         self.rb_threshold_on = forms.RadioButton(Text="있음")
         self.rb_threshold_off = forms.RadioButton(self.rb_threshold_on, Text="없음")
-        if s.get("has_threshold", True): self.rb_threshold_on.Checked = True
-        else: self.rb_threshold_off.Checked = True
+        if s.get("has_threshold", True):
+            self.rb_threshold_on.Checked = True
+        else:
+            self.rb_threshold_off.Checked = True
 
         self.txt_t = forms.TextBox(Text=str(s.get("frame_t", "30")))
+        self.txt_t.Width = 50
         self.txt_d = forms.TextBox(Text=str(s.get("frame_d", "200")))
+        self.txt_d.Width = 50
         self.txt_pframe_t = forms.TextBox(Text=str(s.get("pframe_t", "60")))
+        self.txt_pframe_t.Width = 50
 
         self.cb_flip = forms.CheckBox(Text="뒤집기", Checked=bool(s.get("flip", False)))
         self.cb_union = forms.CheckBox(Text="프레임 결합", Checked=bool(s.get("union", False)))
 
-        self.sli_open = forms.Slider(MinValue=0, MaxValue=100, Value=int(s.get("open_ratio", 0)))
-        self.lbl_open = forms.Label(Text=str(self.sli_open.Value) + "%")
+        saved_open = _clamp(_safe_int(s.get("open_ratio", 0), 0), 0, 100)
+        self.sli_open = forms.Slider(MinValue=0, MaxValue=100, Value=saved_open)
+        self.lbl_open = forms.Label(Text=str(saved_open) + "%")
 
         self.num_panels.ValueChanged += lambda s, e: self.UpdatePreview()
         self.rb_open_1.CheckedChanged += lambda s, e: self.UpdatePreview()
@@ -219,7 +976,7 @@ class FoldingDoorDialog(forms.Dialog[bool]):
         self.layout.AddRow(forms.Label(Text="열림 정도(0~100%):"), self.sli_open, self.lbl_open)
 
     def GetSettingsDict(self):
-        return {
+        return _normalize_folding_settings({
             "num_panels": int(self.num_panels.Value),
             "is_single_open": bool(self.rb_open_1.Checked),
             "has_threshold": bool(self.rb_threshold_on.Checked),
@@ -229,166 +986,51 @@ class FoldingDoorDialog(forms.Dialog[bool]):
             "flip": bool(self.cb_flip.Checked),
             "union": bool(self.cb_union.Checked),
             "open_ratio": int(self.sli_open.Value)
-        }
+        })
 
     def OnOkClicked(self, sender, e):
-        sc.sticky["FoldingDoor_Settings"] = self.GetSettingsDict()
+        current_settings = self.GetSettingsDict()
+        sc.sticky["FoldingDoor_Settings"] = current_settings
+        self.ClosePreview()
         self.Close(True)
 
+    def OnCancelClick(self, sender, e):
+        self.ClosePreview()
+        self.Close(False)
+
     def GetSafeFloat(self, text, default):
-        try: return float(text)
-        except: return default
+        try:
+            return float(text)
+        except:
+            return default
 
     def UpdatePreview(self):
-        self.conduit.preview_breps = self.GenerateGeometry()
-        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        try:
+            self.conduit.preview_breps = self.GenerateGeometry()
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        except Exception as ex:
+            print("FoldingDoor preview error:", ex)
 
     def GenerateGeometry(self):
-        W, H = self.width, self.height
-        T_frame = self.GetSafeFloat(self.txt_t.Text, 30.0)
-        D_frame = self.GetSafeFloat(self.txt_d.Text, 200.0)
+        return generate_folding_door_geometry(self.base_plane, self.width, self.height, self.GetSettingsDict())
 
-        has_threshold = self.rb_threshold_on.Checked
-        panel_count = int(self.num_panels.Value)
-        do_union = self.cb_union.Checked
-        is_bi_parting = self.rb_open_2.Checked
-
-        T_pframe = self.GetSafeFloat(self.txt_pframe_t.Text, 60.0)
-        T_pdepth = 30.0
-        T_glass = 10.0
-
-        open_ratio = self.sli_open.Value / 100.0
-
-        parts = []
-        tol = Rhino.RhinoDoc.ActiveDoc.ModelAbsoluteTolerance
-
-        outer_frames = []
-        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, T_frame), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
-        outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(W - T_frame, W), rg.Interval(0, D_frame), rg.Interval(0, H)).ToBrep())
-
-        if do_union:
-            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
-            if has_threshold:
-                outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(0, W), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
-        else:
-            outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(H - T_frame, H)).ToBrep())
-            if has_threshold:
-                outer_frames.append(rg.Box(rg.Plane.WorldXY, rg.Interval(T_frame, W - T_frame), rg.Interval(0, D_frame), rg.Interval(0, T_frame)).ToBrep())
-
-        if do_union:
-            unioned_outer = rg.Brep.CreateBooleanUnion(outer_frames, tol)
-            if unioned_outer and len(unioned_outer) > 0:
-                for b in unioned_outer: parts.append(("frame", b))
-            else:
-                for b in outer_frames: parts.append(("frame", b))
-        else:
-            for b in outer_frames: parts.append(("frame", b))
-
-        z_start = T_frame if has_threshold else 0.0
-        z_end = H - T_frame
-        p_h = z_end - z_start
-
-        total_inner_w = W - (2 * T_frame)
-        p_w = total_inner_w / panel_count
-
-        max_angle = math.radians(85)
-        theta = max_angle * open_ratio
-
-        def make_box(ix, iy, iz):
-            return rg.Box(rg.Plane.WorldXY, ix, iy, iz).ToBrep()
-
-        if is_bi_parting:
-            left_count = panel_count // 2
-            right_count = panel_count - left_count
-        else:
-            left_count = panel_count
-            right_count = 0
-
-        for group_idx, count in enumerate([left_count, right_count]):
-            if count == 0: continue
-
-            P_hinge = rg.Point3d(0, 0, 0)
-
-            for i in range(count):
-                start_idx = len(parts)
-
-                if i % 2 == 0:
-                    alpha_i = -theta
-                    local_pivot = rg.Point3d(0, 0, 0)
-                    next_local_pivot = rg.Point3d(p_w, T_pdepth, 0)
-                else:
-                    alpha_i = theta
-                    local_pivot = rg.Point3d(0, T_pdepth, 0)
-                    next_local_pivot = rg.Point3d(p_w, 0, 0)
-
-                panel_frames = []
-                iy_frame = rg.Interval(0, T_pdepth)
-                glass_y_offset = (T_pdepth - T_glass) / 2.0
-                iy_glass = rg.Interval(glass_y_offset, glass_y_offset + T_glass)
-
-                if do_union:
-                    panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(0, T_pframe)))
-                    panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(p_h - T_pframe, p_h)))
-                    panel_frames.append(make_box(rg.Interval(0, T_pframe), iy_frame, rg.Interval(0, p_h)))
-                    panel_frames.append(make_box(rg.Interval(p_w - T_pframe, p_w), iy_frame, rg.Interval(0, p_h)))
-
-                    unioned_panel = rg.Brep.CreateBooleanUnion(panel_frames, tol)
-                    if unioned_panel and len(unioned_panel) > 0:
-                        for b in unioned_panel: parts.append(("frame", b))
-                    else:
-                        for b in panel_frames: parts.append(("frame", b))
-                else:
-                    panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(0, T_pframe)))
-                    panel_frames.append(make_box(rg.Interval(0, p_w), iy_frame, rg.Interval(p_h - T_pframe, p_h)))
-                    panel_frames.append(make_box(rg.Interval(0, T_pframe), iy_frame, rg.Interval(T_pframe, p_h - T_pframe)))
-                    panel_frames.append(make_box(rg.Interval(p_w - T_pframe, p_w), iy_frame, rg.Interval(T_pframe, p_h - T_pframe)))
-                    for b in panel_frames: parts.append(("frame", b))
-
-                parts.append(("glass", make_box(rg.Interval(T_pframe, p_w - T_pframe), iy_glass, rg.Interval(T_pframe, p_h - T_pframe))))
-
-                rot_xform = rg.Transform.Rotation(alpha_i, rg.Vector3d.ZAxis, rg.Point3d.Origin)
-
-                rotated_pivot = rg.Point3d(local_pivot)
-                rotated_pivot.Transform(rot_xform)
-
-                tx = P_hinge.X - rotated_pivot.X
-                ty = P_hinge.Y - rotated_pivot.Y
-                tz = P_hinge.Z - rotated_pivot.Z
-                trans_xform = rg.Transform.Translation(tx, ty, tz)
-
-                panel_xform = trans_xform * rot_xform
-
-                offset_xform = rg.Transform.Translation(T_frame, (D_frame - T_pdepth) / 2.0, z_start)
-                final_panel_xform = offset_xform * panel_xform
-
-                if group_idx == 1:
-                    center_x = T_frame + total_inner_w / 2.0
-                    mirror_plane = rg.Plane(rg.Point3d(center_x, 0, 0), rg.Vector3d.XAxis)
-                    mirror_xform = rg.Transform.Mirror(mirror_plane)
-                    final_panel_xform = mirror_xform * final_panel_xform
-
-                for j in range(start_idx, len(parts)):
-                    parts[j][1].Transform(final_panel_xform)
-
-                next_hinge_rotated = rg.Point3d(next_local_pivot)
-                next_hinge_rotated.Transform(rot_xform)
-                P_hinge = rg.Point3d(next_hinge_rotated.X + tx, next_hinge_rotated.Y + ty, next_hinge_rotated.Z + tz)
-
-        global_xform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, rg.Plane(self.base_plane))
-        if self.cb_flip.Checked:
-            global_xform = global_xform * rg.Transform.Scale(rg.Plane.WorldXY, 1.0, -1.0, 1.0)
-
-        final_parts = []
-        for n, b in parts:
-            b.Transform(global_xform)
-            final_parts.append((n, b))
-
-        return final_parts
+    def ClosePreview(self):
+        try:
+            self.conduit.Enabled = False
+            self.conduit.preview_breps = []
+        except:
+            pass
+        try:
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        except:
+            pass
 
     def OnClosed(self, e):
-        self.conduit.Enabled = False
-        Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
-
+        self.ClosePreview()
+        try:
+            super(FoldingDoorDialog, self).OnClosed(e)
+        except:
+            pass
 # ==============================================================================
 # [3] 3D 자유 직사각형 함수 (CPlane 무관)
 # ==============================================================================
@@ -467,11 +1109,27 @@ def _try_get_edit_data_from_objref(objref):
     except:
         obj_id = None
 
-    if not obj_id:
-        return None
+    if obj_id:
+        data = read_door_data_from_object(obj_id)
+        if data:
+            data["_selected_id"] = obj_id
+            return data
 
-    return read_door_data_from_object(obj_id)
+    try:
+        rh_obj = objref.Object()
+    except:
+        rh_obj = None
 
+    if rh_obj:
+        try:
+            data = read_door_data_from_object(rh_obj.Id)
+            if data:
+                data["_selected_id"] = rh_obj.Id
+                return data
+        except:
+            pass
+
+    return None
 
 def _try_get_edit_data_from_getobject(go):
     for i in range(go.ObjectCount):
@@ -606,13 +1264,15 @@ def get_door_target_from_user():
 
     return None
 
+
 # ==============================================================================
 # [5] Bake / Update
 # ==============================================================================
 def bake_or_update_folding_door(dlg, edit_data=None):
     if edit_data and edit_data.get("door_id"):
-        door_id = edit_data.get("door_id")
-        old_object_ids = find_all_objects_by_door_id(door_id)
+        old_object_ids = get_current_folding_set_ids(edit_data)
+        # 복사본/원본이 같은 door_id를 공유하지 않도록 수정 후 새 ID를 부여한다.
+        door_id = str(System.Guid.NewGuid())
     else:
         door_id = str(System.Guid.NewGuid())
         old_object_ids = []
@@ -622,10 +1282,8 @@ def bake_or_update_folding_door(dlg, edit_data=None):
 
     rs.EnableRedraw(False)
 
-    # 수정 모드에서는 같은 door_id를 가진 기존 폴딩도어 구성 객체를 모두 삭제한 뒤 다시 생성한다.
-    # 이렇게 하면 패널 수처럼 객체 개수가 달라지는 설정도 안전하게 반영된다.
     if old_object_ids:
-        rs.DeleteObjects(old_object_ids)
+        _delete_object_ids(old_object_ids)
 
     group_name = rs.AddGroup()
     baked_object_ids = []
@@ -635,13 +1293,15 @@ def bake_or_update_folding_door(dlg, edit_data=None):
         baked_object_ids.append(obj_id)
 
         layer_name = "Door_" + name
-        if not rs.IsLayer(layer_name): rs.AddLayer(layer_name)
+        if not rs.IsLayer(layer_name):
+            rs.AddLayer(layer_name)
         rs.ObjectLayer(obj_id, layer_name)
 
-        if name == "frame": rs.ObjectColor(obj_id, [150, 150, 150])
-        elif name == "glass": rs.ObjectColor(obj_id, [200, 230, 255])
+        if name == "frame":
+            rs.ObjectColor(obj_id, [150, 150, 150])
+        elif name == "glass":
+            rs.ObjectColor(obj_id, [200, 230, 255])
 
-        # 다음 실행 때 선택해서 다시 수정할 수 있도록 모든 구성 객체에 동일한 데이터 저장
         rs.SetUserText(obj_id, DOOR_DATA_KEY, data_string)
         rs.SetUserText(obj_id, DOOR_ID_KEY, door_id)
         rs.SetUserText(obj_id, DOOR_PART_KEY, name)
@@ -657,67 +1317,68 @@ def bake_or_update_folding_door(dlg, edit_data=None):
 # ==============================================================================
 # [6] 메인 실행부
 # ==============================================================================
+def _open_folding_dialog_from_edit_data(edit_data):
+    try:
+        edit_data, _ = _resolve_current_edit_data(edit_data)
+        base_plane = plane_from_data(edit_data["base_plane"])
+        width = float(edit_data["width"])
+        height = float(edit_data["height"])
+        settings = edit_data.get("settings", {})
+    except:
+        rs.MessageBox("선택한 폴딩도어의 저장 데이터가 손상되어 수정할 수 없습니다.", 0, "데이터 오류")
+        return
+
+    dlg = FoldingDoorDialog(base_plane, width, height, settings, True)
+    try:
+        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+    finally:
+        try:
+            dlg.ClosePreview()
+        except:
+            pass
+
+    if rc:
+        bake_or_update_folding_door(dlg, edit_data)
+
+
+def _open_folding_dialog_new(base_plane, width, height):
+    dlg = FoldingDoorDialog(base_plane, width, height, None, False)
+    try:
+        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
+    finally:
+        try:
+            dlg.ClosePreview()
+        except:
+            pass
+
+    if rc:
+        bake_or_update_folding_door(dlg, None)
+
+
 def main():
-    # 1) 실행 전에 이미 이 스크립트로 생성된 폴딩도어 객체가 선택되어 있으면 즉시 수정 모드
     edit_data = find_existing_door_from_selection()
 
     if edit_data:
-        try:
-            base_plane = plane_from_data(edit_data["base_plane"])
-            width = float(edit_data["width"])
-            height = float(edit_data["height"])
-            settings = edit_data.get("settings", {})
-        except:
-            rs.MessageBox("선택한 폴딩도어의 저장 데이터가 손상되어 수정할 수 없습니다.", 0, "데이터 오류")
-            return
-
-        dlg = FoldingDoorDialog(base_plane, width, height, settings, True)
-        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
-
-        if rc:
-            bake_or_update_folding_door(dlg, edit_data)
+        _open_folding_dialog_from_edit_data(edit_data)
         return
 
-    # 선택된 객체가 있었지만 editable folding door가 아니면,
-    # 아래 GetObject 단계에서 같은 객체가 자동으로 다시 잡히지 않도록 비운다.
     if rs.SelectedObjects():
         clear_selection_and_redraw()
 
-    # 2) 실행 후 사용자가 선택하는 객체를 보고 자동 판별
-    #    - 폴딩도어 객체: 수정
-    #    - 수직 모서리/커브 2개 또는 Rectangle: 신규 생성
     target = get_door_target_from_user()
     if not target:
         return
 
     if target.get("mode") == "edit":
         edit_data = target.get("edit_data")
-        try:
-            base_plane = plane_from_data(edit_data["base_plane"])
-            width = float(edit_data["width"])
-            height = float(edit_data["height"])
-            settings = edit_data.get("settings", {})
-        except:
-            rs.MessageBox("선택한 폴딩도어의 저장 데이터가 손상되어 수정할 수 없습니다.", 0, "데이터 오류")
-            return
-
-        dlg = FoldingDoorDialog(base_plane, width, height, settings, True)
-        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
-
-        if rc:
-            bake_or_update_folding_door(dlg, edit_data)
+        _open_folding_dialog_from_edit_data(edit_data)
         return
 
     if target.get("mode") == "new":
         base_plane = target.get("base_plane")
         width = target.get("width")
         height = target.get("height")
-
-        dlg = FoldingDoorDialog(base_plane, width, height, None, False)
-        rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
-
-        if rc:
-            bake_or_update_folding_door(dlg, None)
+        _open_folding_dialog_new(base_plane, width, height)
 
 if __name__ == "__main__":
     main()
