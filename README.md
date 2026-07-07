@@ -114,11 +114,11 @@ SHP 기능이 실행되지 않으면 `shapefile.py` 파일이 `Elephant` 폴더 
 
 ## 사용 조건
 
-이 코드는 자유롭게 사용할 수 있습니다.
+Elephant Tools는 MIT License를 따릅니다.
 
-필요에 따라 수정하거나 배포해도 됩니다.
+자세한 내용은 `LICENSE` 파일을 확인하세요.
 
-`shapefile.py`는 pyshp 1.2.12를 포함하며 MIT License를 따릅니다. 자세한 내용은 `LICENSE-pyshp.txt`를 확인하세요.
+`shapefile.py`는 pyshp 1.2.12를 포함하며, 이 파일 역시 MIT License를 따릅니다. 자세한 내용은 `LICENSE-pyshp.txt`를 확인하세요.
 
 ## 문의
 
