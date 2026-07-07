@@ -8,6 +8,10 @@ __pycache__/
 tools/
 Shapefile확인용/
 
+# Release build output
+dist/
+*.zip
+
 # Excluded Rhino custom script assets
 RhinoCustonScript/
 RhinoCustomScript/
@@ -18,5 +22,4 @@ ElephantToolsR7.generated.rui_bak
 ElephantToolsR7.generated.rui.rui_bak
 
 # Rhino model backups
-Source.3dmbak
-source.3dmbak
+*.3dmbak

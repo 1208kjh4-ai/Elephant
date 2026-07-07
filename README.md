@@ -77,6 +77,16 @@ Rhino 7 = ElephantToolsR7.rui
 Rhino 8 = ElephantTools.rhc
 ```
 
+## 배포 ZIP 생성
+
+GitHub Release에 올릴 배포용 ZIP은 아래 명령으로 생성할 수 있습니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\release-tools\build_release.ps1 -Version 1.0.0
+```
+
+생성된 파일은 `dist\Elephant-v1.0.0.zip`이며, 압축을 풀면 바로 `Elephant` 폴더가 나오도록 구성됩니다.
+
 ## 명령어 업데이트
 
 툴바에 보이는 `#NEW#` 버튼을 좌클릭하면 Elephant 명령어 Alias가 등록 또는 업데이트됩니다.
