@@ -31,7 +31,8 @@ SHORTCUT_SETTINGS = {
     "AZ": '! _-RunPythonScript "Elephant/commands/AZ"',
     "CreateContour": '! _-RunPythonScript "Elephant/commands/CreateContour"',
     "ApplyRoad": '! _-RunPythonScript "Elephant/commands/ApplyRoad"',
-    "SHP": '! _-RunPythonScript "Elephant/commands/SHPimport"'
+    "SHP": '! _-RunPythonScript "Elephant/commands/SHPimport"',
+    "Escalator": '! _-RunPythonScript "Elephant/commands/Escalator"'
 }
 
 # ==============================================================================
