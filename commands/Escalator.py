@@ -632,10 +632,10 @@ class EscalatorGeneratorDialog(forms.Form):
         super(EscalatorGeneratorDialog, self).__init__()
         self.Title = "에스컬레이터 / 무빙워크 생성기 옵션"
         self.Padding = drawing.Padding(15)
-        self.Resizable = False
+        self.Resizable = True
         self.Topmost = True
         self.Owner = Rhino.UI.RhinoEtoApp.MainWindow
-        self.ClientSize = drawing.Size(500, 465)
+        self.ClientSize = drawing.Size(500, 480)
 
     def SetupData(self, base_crv, center, dir_vec, width_vec, rect_length, rect_width, initial_rise=None):
         self.base_crv = base_crv
