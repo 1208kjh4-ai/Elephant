@@ -8,8 +8,10 @@ import Rhino.DocObjects as rdo
 import Eto.Forms as forms
 import Eto.Drawing as drawing
 import rhinoscriptsyntax as rs
+import scriptcontext as sc
 import System
 import math
+import json
 
 # ==============================================================================
 # Escalator Generator for Rhino Python
@@ -60,6 +62,11 @@ LAYER_TREAD = "Es_Tread"
 LAYER_BODY = "Es_Body"
 LAYER_GLASS = "Es_Glass"
 LAYER_HANDRAIL = "Es_Handrail"
+
+METADATA_KEY = "ElephantEscalatorState"
+LAST_STATE_KEY = "ElephantEscalatorLastState"
+ITEM_INDEX_KEY = "ElephantEscalatorItemIndex"
+ITEM_CENTER_KEY = "ElephantEscalatorItemCenter"
 
 # ==============================================================================
 # [Preview] Display Conduit
@@ -210,6 +217,279 @@ def get_rectangle_frame(crv):
 
     center.Z = pts[0].Z
     return True, center, dir_vec, width_vec, length, width, ""
+
+
+def default_escalator_values():
+    return {
+        "rise": 4500.0,
+        "bottom_landing": 1500.0,
+        "top_landing": 1500.0,
+        "body_depth": 900.0,
+        "bal_height": 900.0,
+        "glass_gap": 120.0,
+        "rail_offset_factor": 0.5,
+        "rail_fillet": 600.0
+    }
+
+
+def _point_to_data(point):
+    return [float(point.X), float(point.Y), float(point.Z)]
+
+
+def _vector_to_data(vector):
+    return [float(vector.X), float(vector.Y), float(vector.Z)]
+
+
+def _point_from_data(data):
+    return rg.Point3d(float(data[0]), float(data[1]), float(data[2]))
+
+
+def _vector_from_data(data):
+    return rg.Vector3d(float(data[0]), float(data[1]), float(data[2]))
+
+
+def make_rectangle_curve_from_frame(center, dir_vec, width_vec, length, width):
+    half_l = float(length) * 0.5
+    half_w = float(width) * 0.5
+    pts = [
+        center - dir_vec * half_l - width_vec * half_w,
+        center + dir_vec * half_l - width_vec * half_w,
+        center + dir_vec * half_l + width_vec * half_w,
+        center - dir_vec * half_l + width_vec * half_w
+    ]
+    pts.append(pts[0])
+    return rg.Polyline(pts).ToPolylineCurve()
+
+
+def normalize_escalator_values(values):
+    result = default_escalator_values()
+    if values:
+        for key, value in values.items():
+            if key in result:
+                try:
+                    result[key] = float(value)
+                except:
+                    pass
+    return result
+
+
+def make_state(base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse):
+    return {
+        "version": 1,
+        "frame": {
+            "center": _point_to_data(center),
+            "dir_vec": _vector_to_data(dir_vec),
+            "width_vec": _vector_to_data(width_vec),
+            "rect_length": float(rect_length),
+            "rect_width": float(rect_width)
+        },
+        "values": normalize_escalator_values(values),
+        "mode": mode,
+        "reverse": bool(reverse)
+    }
+
+
+def encode_state(base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse):
+    state = make_state(base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse)
+    return json.dumps(state, ensure_ascii=False)
+
+
+def decode_state(text):
+    if not text:
+        return None
+    try:
+        state = json.loads(text)
+        frame = state["frame"]
+        center = _point_from_data(frame["center"])
+        dir_vec = _safe_unitize(_vector_from_data(frame["dir_vec"]), rg.Vector3d(1, 0, 0))
+        width_vec = _safe_unitize(_vector_from_data(frame["width_vec"]), rg.Vector3d(0, 1, 0))
+        rect_length = float(frame["rect_length"])
+        rect_width = float(frame["rect_width"])
+        base_crv = make_rectangle_curve_from_frame(center, dir_vec, width_vec, rect_length, rect_width)
+        values = normalize_escalator_values(state.get("values", {}))
+        mode = state.get("mode", MODE_ESCALATOR)
+        reverse = bool(state.get("reverse", False))
+        return base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse
+    except:
+        return None
+
+
+def remember_state(base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse):
+    try:
+        sc.sticky[LAST_STATE_KEY] = encode_state(base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse)
+    except:
+        pass
+
+
+def get_last_values():
+    try:
+        text = ""
+        if sc.sticky.has_key(LAST_STATE_KEY):
+            text = sc.sticky[LAST_STATE_KEY]
+        state = decode_state(text)
+        if state:
+            return state[6], state[7], state[8]
+    except:
+        pass
+    return None, None, None
+
+
+def get_state_from_object(obj):
+    if not obj:
+        return None
+    try:
+        return decode_state(obj.Attributes.GetUserString(METADATA_KEY))
+    except:
+        return None
+
+
+def get_generated_group_member_ids(doc, obj):
+    ids = []
+    if not doc or not obj:
+        return ids
+    try:
+        group_indices = obj.Attributes.GetGroupList()
+    except:
+        group_indices = None
+    if group_indices:
+        for group_index in group_indices:
+            try:
+                members = doc.Groups.GroupMembers(group_index)
+            except:
+                members = None
+            if not members:
+                continue
+            for member in members:
+                try:
+                    if member.Attributes.GetUserString(METADATA_KEY):
+                        ids.append(member.Id)
+                except:
+                    pass
+    if not ids:
+        try:
+            ids.append(obj.Id)
+        except:
+            pass
+    unique = []
+    seen = set()
+    for gid in ids:
+        key = str(gid)
+        if key not in seen:
+            unique.append(gid)
+            seen.add(key)
+    return unique
+
+
+def _find_doc_object(doc, gid):
+    try:
+        return doc.Objects.FindId(gid)
+    except:
+        try:
+            return doc.Objects.Find(gid)
+        except:
+            return None
+
+
+def _brep_center(brep):
+    if not brep:
+        return None
+    try:
+        bbox = brep.GetBoundingBox(True)
+        if bbox.IsValid:
+            return bbox.Center
+    except:
+        pass
+    return None
+
+
+def _doc_object_center(obj):
+    if not obj or not obj.Geometry:
+        return None
+    return _brep_center(obj.Geometry)
+
+
+def _stored_item_center(obj):
+    try:
+        text = obj.Attributes.GetUserString(ITEM_CENTER_KEY)
+        if not text:
+            return None
+        data = json.loads(text)
+        return _point_from_data(data)
+    except:
+        return None
+
+
+def _fit_planar_rigid_transform(original_points, current_points):
+    if not original_points or not current_points or len(original_points) != len(current_points):
+        return None
+    count = len(original_points)
+    ox = sum([p.X for p in original_points]) / float(count)
+    oy = sum([p.Y for p in original_points]) / float(count)
+    oz = sum([p.Z for p in original_points]) / float(count)
+    cx = sum([p.X for p in current_points]) / float(count)
+    cy = sum([p.Y for p in current_points]) / float(count)
+    cz = sum([p.Z for p in current_points]) / float(count)
+
+    dot_sum = 0.0
+    cross_sum = 0.0
+    for op, cp in zip(original_points, current_points):
+        ax = op.X - ox
+        ay = op.Y - oy
+        bx = cp.X - cx
+        by = cp.Y - cy
+        dot_sum += ax * bx + ay * by
+        cross_sum += ax * by - ay * bx
+
+    angle = math.atan2(cross_sum, dot_sum) if abs(dot_sum) > 0.000001 or abs(cross_sum) > 0.000001 else 0.0
+    return {
+        "orig_center": rg.Point3d(ox, oy, oz),
+        "cur_center": rg.Point3d(cx, cy, cz),
+        "cos": math.cos(angle),
+        "sin": math.sin(angle)
+    }
+
+
+def _transform_point_xy(point, xform):
+    oc = xform["orig_center"]
+    cc = xform["cur_center"]
+    dx = point.X - oc.X
+    dy = point.Y - oc.Y
+    return rg.Point3d(
+        cc.X + xform["cos"] * dx - xform["sin"] * dy,
+        cc.Y + xform["sin"] * dx + xform["cos"] * dy,
+        point.Z + (cc.Z - oc.Z)
+    )
+
+
+def _transform_vector_xy(vector, xform):
+    return rg.Vector3d(
+        xform["cos"] * vector.X - xform["sin"] * vector.Y,
+        xform["sin"] * vector.X + xform["cos"] * vector.Y,
+        vector.Z
+    )
+
+
+def transform_frame_from_current_objects(doc, center, dir_vec, width_vec, target_ids):
+    original_points = []
+    current_points = []
+    for gid in target_ids:
+        obj = _find_doc_object(doc, gid)
+        stored_center = _stored_item_center(obj)
+        current_center = _doc_object_center(obj)
+        if stored_center and current_center:
+            original_points.append(stored_center)
+            current_points.append(current_center)
+
+    if len(original_points) < 2:
+        return center, dir_vec, width_vec
+    xform = _fit_planar_rigid_transform(original_points, current_points)
+    if not xform:
+        return center, dir_vec, width_vec
+
+    new_center = _transform_point_xy(center, xform)
+    new_dir = _safe_unitize(_transform_vector_xy(dir_vec, xform), dir_vec)
+    new_width = _safe_unitize(_transform_vector_xy(width_vec, xform), width_vec)
+    return new_center, new_dir, new_width
 
 
 def _append_line(polycurve, p0, p1, tol):
@@ -617,10 +897,25 @@ def ensure_layer(doc, layer_name):
     return index
 
 
-def add_brep_to_layer(doc, brep, layer_name):
+def add_brep_to_layer(doc, brep, layer_name, state_json=None, item_index=None, item_center=None):
     layer_index = ensure_layer(doc, layer_name)
     attr = rdo.ObjectAttributes()
     attr.LayerIndex = layer_index
+    if state_json:
+        try:
+            attr.SetUserString(METADATA_KEY, state_json)
+        except:
+            pass
+    if item_index is not None:
+        try:
+            attr.SetUserString(ITEM_INDEX_KEY, str(int(item_index)))
+        except:
+            pass
+    if item_center is not None:
+        try:
+            attr.SetUserString(ITEM_CENTER_KEY, json.dumps(_point_to_data(item_center)))
+        except:
+            pass
     return doc.Objects.AddBrep(brep, attr)
 
 
@@ -632,18 +927,22 @@ class EscalatorGeneratorDialog(forms.Form):
         super(EscalatorGeneratorDialog, self).__init__()
         self.Title = "에스컬레이터 / 무빙워크 생성기 옵션"
         self.Padding = drawing.Padding(15)
-        self.Resizable = True
+        self.Resizable = False
         self.Topmost = True
         self.Owner = Rhino.UI.RhinoEtoApp.MainWindow
-        self.ClientSize = drawing.Size(500, 480)
+        self.ClientSize = drawing.Size(500, 500)
 
-    def SetupData(self, base_crv, center, dir_vec, width_vec, rect_length, rect_width, initial_rise=None):
+    def SetupData(self, base_crv, center, dir_vec, width_vec, rect_length, rect_width,
+                  initial_rise=None, values=None, mode=None, reverse=None, edit_target_ids=None):
         self.base_crv = base_crv
         self.center = center
         self.dir_vec = dir_vec
         self.width_vec = width_vec
         self.rect_length = rect_length
         self.rect_width = rect_width
+        self.edit_target_ids = edit_target_ids if edit_target_ids else []
+        if self.edit_target_ids:
+            self.Title = "에스컬레이터 / 무빙워크 수정"
 
         self.conduit = EscalatorPreviewConduit()
         self.conduit.Enabled = True
@@ -655,21 +954,14 @@ class EscalatorGeneratorDialog(forms.Form):
         self.auto_switched_to_movingwalk = False
         self._suppress_mode_event = False
 
-        self.values = {
-            "rise": 4500.0,
-            "bottom_landing": 1500.0,
-            "top_landing": 1500.0,
-            "body_depth": 900.0,
-            "bal_height": 900.0,
-            "glass_gap": 120.0,
-            "rail_offset_factor": 0.5,
-            "rail_fillet": 600.0
-        }
+        self.values = normalize_escalator_values(values)
+        if mode in [MODE_ESCALATOR, MODE_MOVING_WALK]:
+            self.current_mode = mode
 
         self.initial_rise_detected = False
         self.initial_rise_value = None
         try:
-            if initial_rise is not None and float(initial_rise) > 1.0:
+            if not self.edit_target_ids and initial_rise is not None and float(initial_rise) > 1.0:
                 self.values["rise"] = min(20000.0, max(0.0, float(initial_rise)))
                 self.initial_rise_detected = True
                 self.initial_rise_value = self.values["rise"]
@@ -680,7 +972,7 @@ class EscalatorGeneratorDialog(forms.Form):
 
         self.rbl_mode = forms.RadioButtonList()
         self.rbl_mode.DataStore = ["에스컬레이터", "무빙워크"]
-        self.rbl_mode.SelectedIndex = 0
+        self.rbl_mode.SelectedIndex = 1 if self.current_mode == MODE_MOVING_WALK else 0
         try:
             self.rbl_mode.Orientation = forms.Orientation.Horizontal
         except:
@@ -700,7 +992,7 @@ class EscalatorGeneratorDialog(forms.Form):
         self.btn_pick_rise.Click += self.OnPickRise
 
         self.chk_reverse = forms.CheckBox(Text=" 진행 방향 반전")
-        self.chk_reverse.Checked = False
+        self.chk_reverse.Checked = bool(reverse) if reverse is not None else False
         self.chk_reverse.CheckedChanged += self.OnReverseChanged
 
         self.lbl_info = forms.Label()
@@ -709,7 +1001,7 @@ class EscalatorGeneratorDialog(forms.Form):
         self.btn_apply = forms.Button(Text="적용")
         self.btn_apply.Click += self.OnApply
 
-        self.btn_ok = forms.Button(Text="생성")
+        self.btn_ok = forms.Button(Text="수정 적용" if self.edit_target_ids else "생성")
         self.btn_ok.Click += self.OnOk
 
         self.btn_cancel = forms.Button(Text="취소")
@@ -1188,6 +1480,18 @@ class EscalatorGeneratorDialog(forms.Form):
             msg += "\n" + self.warning_msg
         self.lbl_info.Text = msg
 
+        remember_state(
+            self.base_crv,
+            self.center,
+            self.dir_vec,
+            self.width_vec,
+            self.rect_length,
+            self.rect_width,
+            self.values,
+            self.current_mode,
+            bool(self.chk_reverse.Checked)
+        )
+
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
     def OnPickRise(self, sender, e):
@@ -1272,15 +1576,33 @@ class EscalatorGeneratorDialog(forms.Form):
         self.conduit.Enabled = False
         doc = Rhino.RhinoDoc.ActiveDoc
         doc.Views.RedrawEnabled = False
-        undo_id = doc.BeginUndoRecord("Escalator / MovingWalk Generator Bake")
+        state_json = encode_state(
+            self.base_crv,
+            self.center,
+            self.dir_vec,
+            self.width_vec,
+            self.rect_length,
+            self.rect_width,
+            self.values,
+            self.current_mode,
+            bool(self.chk_reverse.Checked)
+        )
+        undo_name = "Escalator / MovingWalk Edit" if self.edit_target_ids else "Escalator / MovingWalk Generator Bake"
+        undo_id = doc.BeginUndoRecord(undo_name)
         added_guids = []
 
         try:
             bake_items = self.final_items if self.final_items else [(b, LAYER_BODY) for b in self.final_breps]
 
-            for brep, layer_name in bake_items:
+            for gid in self.edit_target_ids:
+                try:
+                    doc.Objects.Delete(gid, True)
+                except:
+                    pass
+
+            for item_index, (brep, layer_name) in enumerate(bake_items):
                 if brep:
-                    guid = add_brep_to_layer(doc, brep, layer_name)
+                    guid = add_brep_to_layer(doc, brep, layer_name, state_json, item_index, _brep_center(brep))
                     if guid != System.Guid.Empty:
                         added_guids.append(guid)
 
@@ -1288,6 +1610,18 @@ class EscalatorGeneratorDialog(forms.Form):
                 group_index = doc.Groups.Add()
                 for guid in added_guids:
                     doc.Groups.AddToGroup(group_index, guid)
+
+            remember_state(
+                self.base_crv,
+                self.center,
+                self.dir_vec,
+                self.width_vec,
+                self.rect_length,
+                self.rect_width,
+                self.values,
+                self.current_mode,
+                bool(self.chk_reverse.Checked)
+            )
 
         finally:
             doc.EndUndoRecord(undo_id)
@@ -1467,6 +1801,21 @@ def draw_rectangle_curve_from_points():
 # ==============================================================================
 # [Main]
 # ==============================================================================
+def get_edit_state_from_objref(doc, objref):
+    try:
+        obj = objref.Object()
+    except:
+        obj = None
+    state = get_state_from_object(obj)
+    if not state:
+        return None
+    base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse = state
+    target_ids = get_generated_group_member_ids(doc, obj)
+    center, dir_vec, width_vec = transform_frame_from_current_objects(doc, center, dir_vec, width_vec, target_ids)
+    base_crv = make_rectangle_curve_from_frame(center, dir_vec, width_vec, rect_length, rect_width)
+    return base_crv, center, dir_vec, width_vec, rect_length, rect_width, values, mode, reverse, target_ids
+
+
 def main():
     doc = Rhino.RhinoDoc.ActiveDoc
 
@@ -1480,6 +1829,7 @@ def main():
 
     base_crv = None
     initial_rise = None
+    edit_state = None
 
     # --------------------------------------------------------------------------
     # Default behavior is SelectRectangle without an extra Enter confirmation.
@@ -1487,8 +1837,8 @@ def main():
     # DrawRectangle is available as a command-line option during the selection prompt.
     # --------------------------------------------------------------------------
     go = ric.GetObject()
-    go.SetCommandPrompt("에스컬레이터 평면 직사각형을 선택하세요. 또는 DrawRectangle 옵션으로 새 직사각형을 그리세요")
-    go.GeometryFilter = rdo.ObjectType.Curve
+    go.SetCommandPrompt("에스컬레이터 평면 직사각형 또는 기존 Escalator 객체를 선택하세요. DrawRectangle 옵션도 사용할 수 있습니다.")
+    go.GeometryFilter = rdo.ObjectType.AnyObject
     go.SubObjectSelect = False
     opt_draw = go.AddOption("DrawRectangle")
 
@@ -1512,9 +1862,15 @@ def main():
 
         if result == Rhino.Input.GetResult.Object:
             objref = go.Object(0)
-            crv = objref.Curve()
+            edit_state = get_edit_state_from_objref(doc, objref)
+            if edit_state:
+                break
+            try:
+                crv = objref.Curve()
+            except:
+                crv = None
             if not crv:
-                rs.MessageBox("커브를 인식하지 못했습니다.", 48, "오류")
+                rs.MessageBox("Rectangle 커브 또는 저장된 Escalator 객체를 선택해주세요.", 48, "오류")
                 return
 
             base_crv = crv.DuplicateCurve()
@@ -1525,13 +1881,20 @@ def main():
 
         return
 
-    ok, center, dir_vec, width_vec, length, width, msg = get_rectangle_frame(base_crv)
-    if not ok:
-        rs.MessageBox(msg, 48, "직사각형 인식 실패")
-        return
+    values, mode, reverse = get_last_values()
+    edit_target_ids = []
+
+    if edit_state:
+        base_crv, center, dir_vec, width_vec, length, width, values, mode, reverse, edit_target_ids = edit_state
+    else:
+        ok, center, dir_vec, width_vec, length, width, msg = get_rectangle_frame(base_crv)
+        if not ok:
+            rs.MessageBox(msg, 48, "직사각형 인식 실패")
+            return
 
     dialog = EscalatorGeneratorDialog()
-    dialog.SetupData(base_crv, center, dir_vec, width_vec, length, width, initial_rise)
+    dialog.SetupData(base_crv, center, dir_vec, width_vec, length, width,
+                     initial_rise, values, mode, reverse, edit_target_ids)
     dialog.Show()
 
 
