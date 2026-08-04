@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+import os
+import sys
+
 import Rhino
 import Rhino.Geometry as rg
 import Rhino.Display as rd
@@ -9,6 +12,32 @@ import Eto.Forms as forms
 import Eto.Drawing as drawing
 import rhinoscriptsyntax as rs
 import System
+
+SCRIPT_PATH = globals().get("__file__")
+COMMANDS_DIR = (
+    os.path.dirname(os.path.realpath(SCRIPT_PATH))
+    if SCRIPT_PATH
+    else None
+)
+if COMMANDS_DIR and COMMANDS_DIR not in sys.path:
+    sys.path.insert(0, COMMANDS_DIR)
+
+
+def run_stair_module(module_name, entry_point):
+    """Load a stair tool only when its command-line option is selected."""
+    try:
+        module = __import__(module_name)
+        runner = getattr(module, entry_point)
+        return runner()
+    except Exception as error:
+        message = u"{0} 실행 중 오류가 발생했습니다.\n{1}".format(
+            module_name,
+            error,
+        )
+        Rhino.RhinoApp.WriteLine(message.replace("\n", " | "))
+        rs.MessageBox(message, 16, u"계단 도구 실행 오류")
+        return Rhino.Commands.Result.Failure
+
 
 # ==============================================================================
 # [프리뷰 전용] 3D 솔리드 및 난간 가이드 실시간 표시 Conduit
@@ -493,19 +522,17 @@ class StairGeneratorDialog(forms.Form):
 # ==============================================================================
 def main():
     doc = Rhino.RhinoDoc.ActiveDoc
-    
-    if not doc.Path:
-        res = rs.MessageBox("크래시 등 예기치 못한 종료에 대비하여\n작업 전 파일을 먼저 저장하시겠습니까?", 4 + 32, "안전 장치 (저장 권장)")
-        if res == 6:
-            rs.Command("_Save", True)
-    elif doc.Modified:
-        rs.Command("_-Save _Enter", False)
-        print("[안전 장치] 작업 보호를 위해 현재 파일이 자동 저장되었습니다.")
 
-    opts = ["SelectCurves", "DrawLine"]
+    opts = ["SelectCurves", "DrawLine", "SelPlanCrv", "CreateCoreStair"]
     res = rs.GetString("계단 생성 기준을 선택하세요", "SelectCurves", opts)
     
     if not res: return
+
+    if res == "SelPlanCrv":
+        return run_stair_module("CustomStair", "run_custom_stair")
+
+    if res == "CreateCoreStair":
+        return run_stair_module("CoreStair", "run_core_stair")
     
     c1, c2 = None, None
 

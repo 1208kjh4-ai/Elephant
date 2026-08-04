@@ -1163,6 +1163,10 @@ def get_current_swing_set_ids(door_id, selected_id, base_plane, width, height, s
 
 def load_swing_data_from_objref(obj_ref):
     obj_id = object_ref_id(obj_ref)
+    return load_swing_data_from_id(obj_id)
+
+
+def load_swing_data_from_id(obj_id):
     if not obj_id: return None
     if safe_get_user_text(obj_id, KEY_TOOL) != TOOL_NAME: return None
 
@@ -1207,6 +1211,22 @@ def load_swing_data_from_objref(obj_ref):
         "height": height,
         "settings": settings
     }
+
+
+def find_existing_swing_from_selection():
+    selected = rs.SelectedObjects()
+    if not selected:
+        return None
+
+    for obj_id in selected:
+        try:
+            data = load_swing_data_from_id(obj_id)
+        except:
+            data = None
+        if data:
+            return data
+
+    return None
 
 
 def get_swing_object_ids(door_id):
@@ -1299,18 +1319,6 @@ def process_two_curves(crv1, crv2):
     return base_plane, width, height
 
 
-def get_second_vertical_curve():
-    go2 = Rhino.Input.Custom.GetObject()
-    go2.SetCommandPrompt("두 번째 수직 모서리를 선택하세요.")
-    go2.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
-    go2.SubObjectSelect = True
-    go2.EnablePreSelect(False, True)
-
-    rc = go2.Get()
-    if rc != Rhino.Input.GetResult.Object: return None
-    return get_curve_from_objref(go2.Object(0))
-
-
 def bake_swing_door(dlg, door_id):
     frames = []
     panels = []
@@ -1380,11 +1388,14 @@ def bake_swing_door(dlg, door_id):
     return final_objs
 
 
-def get_3pt_rectangle_custom():
-    gp1 = Rhino.Input.Custom.GetPoint()
-    gp1.SetCommandPrompt("첫 번째 코너를 지정하세요 (시작점)")
-    if gp1.Get() != Rhino.Input.GetResult.Point: return None
-    p1 = gp1.Point()
+def get_3pt_rectangle_custom(first_point=None):
+    if first_point is None:
+        gp1 = Rhino.Input.Custom.GetPoint()
+        gp1.SetCommandPrompt("첫 번째 코너를 지정하세요 (시작점)")
+        if gp1.Get() != Rhino.Input.GetResult.Point: return None
+        p1 = gp1.Point()
+    else:
+        p1 = rg.Point3d(first_point)
     
     gp2 = Rhino.Input.Custom.GetPoint()
     gp2.SetCommandPrompt("두 번째 코너를 지정하세요 (문 폭 및 방향)")
@@ -1431,91 +1442,118 @@ def get_3pt_rectangle_custom():
     base_plane = rg.Plane(p1, x_dir, y_dir)
     return base_plane, width, height
 
-def get_input_context():
+
+def get_swing_input_from_curves():
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("신규 여닫이문의 두 수직 커브 또는 모서리를 선택하세요.")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
+    go.SubObjectSelect = True
+    try:
+        go.EnablePreSelect(False, True)
+    except:
+        pass
+    try:
+        go.GroupSelect = False
+    except:
+        pass
+
+    get_rc = go.GetMultiple(2, 2)
+    if get_rc != Rhino.Input.GetResult.Object:
+        return None
+
+    crv1 = get_curve_from_objref(go.Object(0))
+    crv2 = get_curve_from_objref(go.Object(1))
+    result = process_two_curves(crv1, crv2)
+    if not result:
+        rs.MessageBox(
+            "신규 생성에는 유효한 수직 커브 또는 모서리 두 개가 필요합니다.",
+            0,
+            "선택 오류"
+        )
+        return None
+
+    base_plane, width, height = result
+    return {
+        "mode": "new",
+        "door_id": None,
+        "base_plane": base_plane,
+        "width": width,
+        "height": height,
+        "settings": None
+    }
+
+
+def get_swing_edit_input():
     while True:
         go = Rhino.Input.Custom.GetObject()
-        go.SetCommandPrompt("수정할 여닫이문 객체 또는 신규 생성을 위한 수직 모서리를 선택하세요.")
-        go.GeometryFilter = Rhino.DocObjects.ObjectType.AnyObject | Rhino.DocObjects.ObjectType.EdgeFilter
-        go.SubObjectSelect = True
-        go.EnablePreSelect(False, True)
+        go.SetCommandPrompt("수정할 여닫이문 객체를 선택하세요.")
+        go.GeometryFilter = Rhino.DocObjects.ObjectType.AnyObject
+        go.SubObjectSelect = False
+        try:
+            go.EnablePreSelect(False, True)
+        except:
+            pass
+        try:
+            go.GroupSelect = False
+        except:
+            pass
 
-        opt_rect_idx = go.AddOption("Rectangle")
-        get_rc = go.GetMultiple(1, 2)
-
-        if get_rc == Rhino.Input.GetResult.Cancel:
+        get_rc = go.Get()
+        if get_rc != Rhino.Input.GetResult.Object:
             return None
 
+        data = load_swing_data_from_objref(go.Object(0))
+        if data:
+            return data
+
+        rs.MessageBox(
+            "이 스크립트로 생성된 여닫이문 객체를 선택하세요.",
+            0,
+            "선택 오류"
+        )
+        rs.UnselectAllObjects()
+
+
+def get_input_context():
+    while True:
+        gp1 = Rhino.Input.Custom.GetPoint()
+        gp1.SetCommandPrompt("신규 여닫이문 사각형의 첫 번째 코너를 지정하세요.")
+        opt_curves = gp1.AddOption("SelectCurves")
+        opt_edit = gp1.AddOption("Edit")
+        get_rc = gp1.Get()
+
+        if get_rc == Rhino.Input.GetResult.Point:
+            result = get_3pt_rectangle_custom(gp1.Point())
+            if not result:
+                return None
+            base_plane, width, height = result
+            return {
+                "mode": "new",
+                "door_id": None,
+                "base_plane": base_plane,
+                "width": width,
+                "height": height,
+                "settings": None
+            }
+
         if get_rc == Rhino.Input.GetResult.Option:
-            if go.Option().Index == opt_rect_idx:
-                result = get_3pt_rectangle_custom()
-                if result:
-                    base_plane, width, height = result
-                    return {
-                        "mode": "new",
-                        "door_id": None,
-                        "base_plane": base_plane,
-                        "width": width,
-                        "height": height,
-                        "settings": None
-                    }
-                else:
-                    return None
-
-        elif get_rc == Rhino.Input.GetResult.Object:
-            # 1개든 2개든, 선택 객체 중 수정 가능한 여닫이문 데이터가 있으면 수정 모드 우선
-            for i in range(go.ObjectCount):
-                data = load_swing_data_from_objref(go.Object(i))
-                if data:
-                    return data
-
-            # 수정 객체가 아니면 신규 생성용 수직 모서리로 해석
-            if go.ObjectCount == 2:
-                crv1 = get_curve_from_objref(go.Object(0))
-                crv2 = get_curve_from_objref(go.Object(1))
-                result = process_two_curves(crv1, crv2)
-                if result:
-                    base_plane, width, height = result
-                    return {
-                        "mode": "new",
-                        "door_id": None,
-                        "base_plane": base_plane,
-                        "width": width,
-                        "height": height,
-                        "settings": None
-                    }
-
-            elif go.ObjectCount == 1:
-                crv1 = get_curve_from_objref(go.Object(0))
-                if crv1:
-                    crv2 = get_second_vertical_curve()
-                    result = process_two_curves(crv1, crv2)
-                    if result:
-                        base_plane, width, height = result
-                        return {
-                            "mode": "new",
-                            "door_id": None,
-                            "base_plane": base_plane,
-                            "width": width,
-                            "height": height,
-                            "settings": None
-                        }
-                    else:
-                        return None
-
-            rs.MessageBox(
-                "선택한 객체는 수정 가능한 여닫이문이 아닙니다.\n\n"
-                "수정하려면 이 스크립트로 생성된 여닫이문 객체를 선택하세요.\n"
-                "새로 만들려면 두 개의 수직 모서리 또는 Rectangle 옵션을 사용하세요.",
-                0,
-                "선택 오류"
-            )
-            rs.UnselectAllObjects()
-            go.ClearObjects()
+            option_index = gp1.Option().Index
+            if option_index == opt_curves:
+                return get_swing_input_from_curves()
+            if option_index == opt_edit:
+                return get_swing_edit_input()
             continue
+
+        return None
 
 
 def main():
-    input_data = get_input_context()
+    input_data = find_existing_swing_from_selection()
+    if not input_data:
+        if rs.SelectedObjects():
+            rs.UnselectAllObjects()
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        input_data = get_input_context()
     if not input_data: return
 
     base_plane = input_data["base_plane"]

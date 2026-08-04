@@ -41,6 +41,22 @@ function Copy-RequiredItem {
     Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
 }
 
+function Remove-ReleaseClutter {
+    param(
+        [string]$Root
+    )
+
+    $excludedFilePatterns = @("*.pyc", "*.pyo", "*.zip", "*.rhl", "*.3dmbak")
+    foreach ($pattern in $excludedFilePatterns) {
+        Get-ChildItem -LiteralPath $Root -Recurse -Force -File -Filter $pattern |
+            Remove-Item -Force
+    }
+
+    Get-ChildItem -LiteralPath $Root -Recurse -Force -Directory -Filter "__pycache__" |
+        Sort-Object FullName -Descending |
+        Remove-Item -Recurse -Force
+}
+
 Assert-InProject $distDir
 Assert-InProject $stageRoot
 
@@ -56,11 +72,12 @@ New-Item -ItemType Directory -Path $packageRoot | Out-Null
 
 $requiredItems = @(
     "commands",
-    "system",
     "icons",
     "ElephantTools.rhc",
     "ElephantToolsR7.rui",
     "Source.3dm",
+    "korroadfont.3dm",
+    "AuditoriumSeat.3dm",
     "RoadMarkDB.json",
     "shapefile.py",
     "LICENSE",
@@ -71,6 +88,8 @@ $requiredItems = @(
 foreach ($item in $requiredItems) {
     Copy-RequiredItem $item
 }
+
+Remove-ReleaseClutter $packageRoot
 
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force

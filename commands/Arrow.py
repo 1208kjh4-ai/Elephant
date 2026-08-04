@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import Rhino
 import Rhino.Geometry as rg
 import Rhino.Display as rd
@@ -18,6 +19,43 @@ IMG_ARROW = "arrow.png"
 IMG_SYMBOL = "symbol.png"
 IMG_TEXT = "text.png"
 
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import roadtext.composer as _roadtext_composer
+import roadtext.digits as _roadtext_digits
+import roadtext.errors as _roadtext_errors
+import roadtext.hangul as _roadtext_hangul
+import roadtext.pictograms as _roadtext_pictograms
+import roadtext.library as _roadtext_library
+import roadtext.runtime as _roadtext_runtime
+
+try:
+    reload
+except NameError:
+    from importlib import reload
+
+# RunPythonScript를 같은 Rhino 세션에서 다시 실행해도 수정된 엔진을 읽습니다.
+for _roadtext_module in (
+    _roadtext_errors,
+    _roadtext_hangul,
+    _roadtext_pictograms,
+    _roadtext_digits,
+    _roadtext_library,
+    _roadtext_composer,
+    _roadtext_runtime,
+):
+    reload(_roadtext_module)
+
+RoadTextComposer = _roadtext_composer.RoadTextComposer
+RoadTextError = _roadtext_errors.RoadTextError
+create_digit_curves = _roadtext_digits.create_digit_curves
+has_digit = _roadtext_digits.has_digit
+PICTOGRAM_LABELS = list(_roadtext_pictograms.PICTOGRAM_LABELS)
+get_pictogram_layer_name = _roadtext_pictograms.get_layer_name
+get_road_glyph_library = _roadtext_runtime.get_road_glyph_library
+reset_road_glyph_library = _roadtext_runtime.reset_road_glyph_library
+
 def get_icon(file_name):
     """icons 폴더 내의 PNG 파일을 불러와 Bitmap으로 변환합니다."""
     try:
@@ -31,26 +69,10 @@ def get_icon(file_name):
         return None
 
 # ==============================================================================
-# [1. 통합 지오메트리 엔진]
+# [2. 통합 지오메트리 엔진]
 # ==============================================================================
 class MarkGenerator:
     W, H = 1000, 3000
-    DIGIT_DB = {
-        '0': [[rg.Point3d(750.0,550.0,0), rg.Point3d(750.0,2450.0,0), rg.Point3d(734.9,2535.5,0), rg.Point3d(691.5,2610.7,0), rg.Point3d(625.0,2666.5,0), rg.Point3d(543.4,2696.2,0), rg.Point3d(456.6,2696.2,0), rg.Point3d(375.0,2666.5,0), rg.Point3d(308.5,2610.7,0), rg.Point3d(265.1,2535.5,0), rg.Point3d(250.0,2450.0,0), rg.Point3d(250.0,550.0,0), rg.Point3d(265.1,464.5,0), rg.Point3d(308.5,389.3,0), rg.Point3d(375.0,333.5,0), rg.Point3d(456.6,303.8,0), rg.Point3d(543.4,303.8,0), rg.Point3d(625.0,333.5,0), rg.Point3d(691.5,389.3,0), rg.Point3d(734.9,464.5,0), rg.Point3d(750.0,550.0,0)], [rg.Point3d(50.0,2450.0,0), rg.Point3d(77.1,2603.9,0), rg.Point3d(155.3,2739.3,0), rg.Point3d(275.0,2839.7,0), rg.Point3d(421.9,2893.2,0), rg.Point3d(578.1,2893.2,0), rg.Point3d(725.0,2839.7,0), rg.Point3d(844.7,2739.3,0), rg.Point3d(922.9,2603.9,0), rg.Point3d(950.0,2450.0,0), rg.Point3d(950.0,550.0,0), rg.Point3d(922.9,396.1,0), rg.Point3d(844.7,260.7,0), rg.Point3d(725.0,160.3,0), rg.Point3d(578.1,106.8,0), rg.Point3d(421.9,106.8,0), rg.Point3d(275.0,160.3,0), rg.Point3d(155.3,260.7,0), rg.Point3d(77.1,396.1,0), rg.Point3d(50.0,550.0,0), rg.Point3d(50.0,2450.0,0)]],
-        '1': [[rg.Point3d(50.0,2550.0,0), rg.Point3d(400.0,2900.0,0), rg.Point3d(600.0,2900.0,0), rg.Point3d(600.0,300.0,0), rg.Point3d(950.0,300.0,0), rg.Point3d(950.0,100.0,0), rg.Point3d(50.0,100.0,0), rg.Point3d(50.0,300.0,0), rg.Point3d(400.0,300.0,0), rg.Point3d(400.0,2617.2,0), rg.Point3d(191.4,2408.6,0), rg.Point3d(50.0,2550.0,0)]],
-        '2': [[rg.Point3d(950.0,2452.7,0), rg.Point3d(950.0,1939.3,0), rg.Point3d(934.7,1798.3,0), rg.Point3d(891.5,1663.3,0), rg.Point3d(822.4,1539.5,0), rg.Point3d(729.9,1431.9,0), rg.Point3d(406.1,1128.8,0), rg.Point3d(340.7,1052.4,0), rg.Point3d(291.7,964.6,0), rg.Point3d(261.1,868.9,0), rg.Point3d(250.0,769.0,0), rg.Point3d(250.0,300.0,0), rg.Point3d(950.0,300.0,0), rg.Point3d(950.0,100.0,0), rg.Point3d(502.7,100.0,0), rg.Point3d(50.0,100.0,0), rg.Point3d(50.0,768.1,0), rg.Point3d(65.3,909.1,0), rg.Point3d(108.5,1044.1,0), rg.Point3d(177.6,1167.9,0), rg.Point3d(270.1,1275.5,0), rg.Point3d(593.9,1578.6,0), rg.Point3d(659.3,1655.0,0), rg.Point3d(708.3,1742.8,0), rg.Point3d(738.9,1838.5,0), rg.Point3d(750.0,1938.4,0), rg.Point3d(750.0,2450.0,0), rg.Point3d(734.9,2535.5,0), rg.Point3d(691.5,2610.7,0), rg.Point3d(625.0,2666.5,0), rg.Point3d(543.4,2696.2,0), rg.Point3d(456.6,2696.2,0), rg.Point3d(375.0,2666.5,0), rg.Point3d(308.5,2610.7,0), rg.Point3d(265.1,2535.5,0), rg.Point3d(250.0,2450.0,0), rg.Point3d(250.0,2160.2,0), rg.Point3d(50.0,2160.2,0), rg.Point3d(50.0,2452.7,0), rg.Point3d(77.9,2605.9,0), rg.Point3d(156.2,2740.4,0), rg.Point3d(275.8,2840.2,0), rg.Point3d(422.2,2893.2,0), rg.Point3d(577.8,2893.2,0), rg.Point3d(724.2,2840.2,0), rg.Point3d(843.8,2740.4,0), rg.Point3d(922.1,2605.9,0), rg.Point3d(950.0,2452.7,0)]],
-        '3': [[rg.Point3d(501.5,1367.0,0), rg.Point3d(500.0,1367.0,0), rg.Point3d(390.7,1367.0,0), rg.Point3d(390.7,1567.0,0), rg.Point3d(500.0,1567.0,0), rg.Point3d(595.3,1585.9,0), rg.Point3d(676.2,1639.7,0), rg.Point3d(730.5,1720.3,0), rg.Point3d(750.0,1815.5,0), rg.Point3d(750.0,2450.0,0), rg.Point3d(734.9,2535.5,0), rg.Point3d(691.5,2610.7,0), rg.Point3d(625.0,2666.5,0), rg.Point3d(543.4,2696.2,0), rg.Point3d(456.6,2696.2,0), rg.Point3d(375.0,2666.5,0), rg.Point3d(308.5,2610.7,0), rg.Point3d(265.1,2535.5,0), rg.Point3d(250.0,2450.0,0), rg.Point3d(250.0,2332.4,0), rg.Point3d(50.0,2332.4,0), rg.Point3d(50.0,2450.0,0), rg.Point3d(77.1,2603.9,0), rg.Point3d(155.3,2739.3,0), rg.Point3d(275.0,2839.7,0), rg.Point3d(421.9,2893.2,0), rg.Point3d(578.1,2893.2,0), rg.Point3d(725.0,2839.7,0), rg.Point3d(844.7,2739.3,0), rg.Point3d(922.9,2603.9,0), rg.Point3d(950.0,2450.0,0), rg.Point3d(950.0,1814.3,0), rg.Point3d(938.4,1715.6,0), rg.Point3d(905.5,1621.9,0), rg.Point3d(852.8,1537.6,0), rg.Point3d(782.8,1467.0,0), rg.Point3d(852.8,1396.4,0), rg.Point3d(905.5,1312.2,0), rg.Point3d(938.4,1218.4,0), rg.Point3d(950.0,1119.7,0), rg.Point3d(950.0,550.0,0), rg.Point3d(922.9,396.1,0), rg.Point3d(844.7,260.7,0), rg.Point3d(725.0,160.3,0), rg.Point3d(578.1,106.8,0), rg.Point3d(421.9,106.8,0), rg.Point3d(275.0,160.3,0), rg.Point3d(155.3,260.7,0), rg.Point3d(77.1,396.1,0), rg.Point3d(50.0,550.0,0), rg.Point3d(50.0,674.0,0), rg.Point3d(250.0,674.0,0), rg.Point3d(250.0,550.0,0), rg.Point3d(265.1,464.5,0), rg.Point3d(308.5,389.3,0), rg.Point3d(375.0,333.5,0), rg.Point3d(456.6,303.8,0), rg.Point3d(543.4,303.8,0), rg.Point3d(625.0,333.5,0), rg.Point3d(691.5,389.3,0), rg.Point3d(734.9,464.5,0), rg.Point3d(750.0,550.0,0), rg.Point3d(750.0,1118.5,0), rg.Point3d(730.7,1213.4,0), rg.Point3d(676.8,1293.8,0), rg.Point3d(596.4,1347.7,0), rg.Point3d(501.5,1367.0,0)]],
-        '4': [[rg.Point3d(600.0,873.3,0), rg.Point3d(50.0,873.3,0), rg.Point3d(50.0,1500.0,0), rg.Point3d(570.2,2900.0,0), rg.Point3d(757.7,2830.3,0), rg.Point3d(250.0,1464.0,0), rg.Point3d(250.0,1073.3,0), rg.Point3d(600.0,1073.3,0), rg.Point3d(600.0,1679.2,0), rg.Point3d(800.0,1679.2,0), rg.Point3d(800.0,1073.3,0), rg.Point3d(950.0,1073.3,0), rg.Point3d(950.0,873.3,0), rg.Point3d(800.0,873.3,0), rg.Point3d(800.0,100.0,0), rg.Point3d(600.0,100.0,0), rg.Point3d(600.0,873.3,0)]],
-        '5': [[rg.Point3d(750.0,1294.5,0), rg.Point3d(734.5,1379.6,0), rg.Point3d(691.0,1454.4,0), rg.Point3d(624.6,1509.8,0), rg.Point3d(543.2,1539.2,0), rg.Point3d(456.8,1539.2,0), rg.Point3d(375.4,1509.8,0), rg.Point3d(309.0,1454.4,0), rg.Point3d(265.5,1379.6,0), rg.Point3d(250.0,1294.5,0), rg.Point3d(250.0,1293.0,0), rg.Point3d(50.0,1293.0,0), rg.Point3d(50.0,2900.0,0), rg.Point3d(950.0,2900.0,0), rg.Point3d(950.0,2700.0,0), rg.Point3d(250.0,2700.0,0), rg.Point3d(250.0,1667.2,0), rg.Point3d(345.8,1715.8,0), rg.Point3d(450.4,1740.3,0), rg.Point3d(557.9,1739.3,0), rg.Point3d(662.0,1712.9,0), rg.Point3d(756.9,1662.5,0), rg.Point3d(837.1,1591.1,0), rg.Point3d(898.2,1502.7,0), rg.Point3d(936.5,1402.3,0), rg.Point3d(950.0,1295.7,0), rg.Point3d(950.0,547.3,0), rg.Point3d(922.1,394.1,0), rg.Point3d(843.8,259.6,0), rg.Point3d(724.2,159.8,0), rg.Point3d(577.8,106.8,0), rg.Point3d(422.2,106.8,0), rg.Point3d(275.8,159.8,0), rg.Point3d(156.2,259.6,0), rg.Point3d(77.9,394.1,0), rg.Point3d(50.0,547.3,0), rg.Point3d(50.0,674.0,0), rg.Point3d(250.0,674.0,0), rg.Point3d(250.0,550.0,0), rg.Point3d(265.1,464.5,0), rg.Point3d(308.5,389.3,0), rg.Point3d(375.0,333.5,0), rg.Point3d(456.6,303.8,0), rg.Point3d(543.4,303.8,0), rg.Point3d(625.0,333.5,0), rg.Point3d(691.5,389.3,0), rg.Point3d(734.9,464.5,0), rg.Point3d(750.0,550.0,0), rg.Point3d(750.0,1294.5,0)]],
-        '6': [[rg.Point3d(950.0,1293.0,0), rg.Point3d(950.0,550.0,0), rg.Point3d(922.9,396.1,0), rg.Point3d(844.7,260.7,0), rg.Point3d(725.0,160.3,0), rg.Point3d(578.1,106.8,0), rg.Point3d(421.9,106.8,0), rg.Point3d(275.0,160.3,0), rg.Point3d(155.3,260.7,0), rg.Point3d(77.1,396.1,0), rg.Point3d(50.0,550.0,0), rg.Point3d(50.0,1293.0,0), rg.Point3d(50.0,1295.7,0), rg.Point3d(50.0,2450.0,0), rg.Point3d(77.1,2603.9,0), rg.Point3d(155.3,2739.3,0), rg.Point3d(275.0,2839.7,0), rg.Point3d(421.9,2893.2,0), rg.Point3d(578.1,2893.2,0), rg.Point3d(725.0,2839.7,0), rg.Point3d(844.7,2739.3,0), rg.Point3d(922.9,2603.9,0), rg.Point3d(950.0,2450.0,0), rg.Point3d(950.0,2303.8,0), rg.Point3d(750.0,2303.8,0), rg.Point3d(750.0,2450.0,0), rg.Point3d(734.9,2535.5,0), rg.Point3d(691.5,2610.7,0), rg.Point3d(625.0,2666.5,0), rg.Point3d(543.4,2696.2,0), rg.Point3d(456.6,2696.2,0), rg.Point3d(375.0,2666.5,0), rg.Point3d(308.5,2610.7,0), rg.Point3d(265.1,2535.5,0), rg.Point3d(250.0,2450.0,0), rg.Point3d(250.0,1667.2,0), rg.Point3d(346.1,1715.9,0), rg.Point3d(451.0,1740.3,0), rg.Point3d(558.7,1739.2,0), rg.Point3d(663.1,1712.4,0), rg.Point3d(758.1,1661.6,0), rg.Point3d(838.3,1589.7,0), rg.Point3d(899.2,1500.8,0), rg.Point3d(937.1,1400.0,0), rg.Point3d(950.0,1293.0,0)], [rg.Point3d(750.0,1294.5,0), rg.Point3d(734.5,1379.6,0), rg.Point3d(691.0,1454.4,0), rg.Point3d(624.6,1509.8,0), rg.Point3d(543.2,1539.2,0), rg.Point3d(456.8,1539.2,0), rg.Point3d(375.4,1509.8,0), rg.Point3d(309.0,1454.4,0), rg.Point3d(265.5,1379.6,0), rg.Point3d(250.0,1294.5,0), rg.Point3d(250.0,550.0,0), rg.Point3d(265.1,464.5,0), rg.Point3d(308.5,389.3,0), rg.Point3d(375.0,333.5,0), rg.Point3d(456.6,303.8,0), rg.Point3d(543.4,303.8,0), rg.Point3d(625.0,333.5,0), rg.Point3d(691.5,389.3,0), rg.Point3d(734.9,464.5,0), rg.Point3d(750.0,550.0,0), rg.Point3d(750.0,1294.5,0)]],
-        '7': [[rg.Point3d(50.0,2900.0,0), rg.Point3d(950.0,2900.0,0), rg.Point3d(950.0,1905.7,0), rg.Point3d(600.0,1172.3,0), rg.Point3d(600.0,100.0,0), rg.Point3d(400.0,100.0,0), rg.Point3d(400.0,1217.6,0), rg.Point3d(750.0,1951.0,0), rg.Point3d(750.0,2700.0,0), rg.Point3d(250.0,2700.0,0), rg.Point3d(250.0,2034.7,0), rg.Point3d(50.0,2034.7,0), rg.Point3d(50.0,2900.0,0)]],
-        '8': [[rg.Point3d(250.0,1109.2,0), rg.Point3d(250.0,550.0,0), rg.Point3d(265.1,464.5,0), rg.Point3d(308.5,389.3,0), rg.Point3d(375.0,333.5,0), rg.Point3d(456.6,303.8,0), rg.Point3d(543.4,303.8,0), rg.Point3d(625.0,333.5,0), rg.Point3d(691.5,389.3,0), rg.Point3d(734.9,464.5,0), rg.Point3d(750.0,550.0,0), rg.Point3d(750.0,1109.2,0), rg.Point3d(734.5,1194.3,0), rg.Point3d(691.0,1269.1,0), rg.Point3d(624.6,1324.5,0), rg.Point3d(543.2,1354.0,0), rg.Point3d(456.8,1354.0,0), rg.Point3d(375.4,1324.5,0), rg.Point3d(309.0,1269.1,0), rg.Point3d(265.5,1194.3,0), rg.Point3d(250.0,1109.2,0)], [rg.Point3d(750.0,1879.6,0), rg.Point3d(750.0,2450.0,0), rg.Point3d(734.9,2535.5,0), rg.Point3d(691.5,2610.7,0), rg.Point3d(625.0,2666.5,0), rg.Point3d(543.4,2696.2,0), rg.Point3d(456.6,2696.2,0), rg.Point3d(375.0,2666.5,0), rg.Point3d(308.5,2610.7,0), rg.Point3d(265.1,2535.5,0), rg.Point3d(250.0,2450.0,0), rg.Point3d(250.0,1879.6,0), rg.Point3d(265.5,1794.5,0), rg.Point3d(309.0,1719.8,0), rg.Point3d(375.4,1664.4,0), rg.Point3d(456.8,1634.9,0), rg.Point3d(543.2,1634.9,0), rg.Point3d(624.6,1664.4,0), rg.Point3d(691.0,1719.8,0), rg.Point3d(734.5,1794.5,0), rg.Point3d(750.0,1879.6,0)], [rg.Point3d(269.9,1494.4,0), rg.Point3d(179.1,1565.6,0), rg.Point3d(109.5,1657.5,0), rg.Point3d(65.5,1764.1,0), rg.Point3d(50.0,1878.4,0), rg.Point3d(50.0,2450.0,0), rg.Point3d(77.1,2603.9,0), rg.Point3d(155.3,2739.3,0), rg.Point3d(275.0,2839.7,0), rg.Point3d(421.9,2893.2,0), rg.Point3d(578.1,2893.2,0), rg.Point3d(725.0,2839.7,0), rg.Point3d(844.7,2739.3,0), rg.Point3d(922.9,2603.9,0), rg.Point3d(950.0,2450.0,0), rg.Point3d(950.0,1878.4,0), rg.Point3d(934.5,1764.1,0), rg.Point3d(890.5,1657.5,0), rg.Point3d(820.9,1565.6,0), rg.Point3d(730.1,1494.4,0), rg.Point3d(820.9,1423.2,0), rg.Point3d(890.5,1331.3,0), rg.Point3d(934.5,1224.7,0), rg.Point3d(950.0,1110.4,0), rg.Point3d(950.0,550.0,0), rg.Point3d(922.9,396.1,0), rg.Point3d(844.7,260.7,0), rg.Point3d(725.0,160.3,0), rg.Point3d(578.1,106.8,0), rg.Point3d(421.9,106.8,0), rg.Point3d(275.0,160.3,0), rg.Point3d(155.3,260.7,0), rg.Point3d(77.1,396.1,0), rg.Point3d(50.0,550.0,0), rg.Point3d(50.0,1110.4,0), rg.Point3d(65.5,1224.7,0), rg.Point3d(109.5,1331.3,0), rg.Point3d(179.1,1423.2,0), rg.Point3d(269.9,1494.4,0)]],
-        '9': [[rg.Point3d(750.0,1706.1,0), rg.Point3d(750.0,2450.0,0), rg.Point3d(734.9,2535.5,0), rg.Point3d(691.5,2610.7,0), rg.Point3d(625.0,2666.5,0), rg.Point3d(543.4,2696.2,0), rg.Point3d(456.6,2696.2,0), rg.Point3d(375.0,2666.5,0), rg.Point3d(308.5,2610.7,0), rg.Point3d(265.1,2535.5,0), rg.Point3d(250.0,2450.0,0), rg.Point3d(250.0,1706.1,0), rg.Point3d(265.5,1621.0,0), rg.Point3d(309.0,1546.3,0), rg.Point3d(375.4,1490.9,0), rg.Point3d(456.8,1461.4,0), rg.Point3d(543.2,1461.4,0), rg.Point3d(624.6,1490.9,0), rg.Point3d(691.0,1546.3,0), rg.Point3d(734.5,1621.0,0), rg.Point3d(750.0,1706.1,0)], [rg.Point3d(750.0,1333.5,0), rg.Point3d(654.2,1284.9,0), rg.Point3d(549.6,1260.4,0), rg.Point3d(442.1,1261.4,0), rg.Point3d(338.0,1287.8,0), rg.Point3d(243.1,1338.2,0), rg.Point3d(162.9,1409.6,0), rg.Point3d(101.8,1498.0,0), rg.Point3d(63.5,1598.4,0), rg.Point3d(50.0,1705.0,0), rg.Point3d(50.0,2452.7,0), rg.Point3d(77.9,2605.9,0), rg.Point3d(156.2,2740.4,0), rg.Point3d(275.8,2840.2,0), rg.Point3d(422.2,2893.2,0), rg.Point3d(577.8,2893.2,0), rg.Point3d(724.2,2840.2,0), rg.Point3d(843.8,2740.4,0), rg.Point3d(922.1,2605.9,0), rg.Point3d(950.0,2452.7,0), rg.Point3d(950.0,547.3,0), rg.Point3d(922.1,394.1,0), rg.Point3d(843.8,259.6,0), rg.Point3d(724.2,159.8,0), rg.Point3d(577.8,106.8,0), rg.Point3d(422.2,106.8,0), rg.Point3d(275.8,159.8,0), rg.Point3d(156.2,259.6,0), rg.Point3d(77.9,394.1,0), rg.Point3d(50.0,547.3,0), rg.Point3d(50.0,674.0,0), rg.Point3d(250.0,674.0,0), rg.Point3d(250.0,550.0,0), rg.Point3d(265.1,464.5,0), rg.Point3d(308.5,389.3,0), rg.Point3d(375.0,333.5,0), rg.Point3d(456.6,303.8,0), rg.Point3d(543.4,303.8,0), rg.Point3d(625.0,333.5,0), rg.Point3d(691.5,389.3,0), rg.Point3d(734.9,464.5,0), rg.Point3d(750.0,550.0,0), rg.Point3d(750.0,1333.5,0)]],
-    }
-    SYMBOL_DB = {
-        '횡단보도': [[rg.Point3d(-0.0,-1724.4,0), rg.Point3d(512.1,0.0,0), rg.Point3d(-0.0,1724.4,0), rg.Point3d(-512.1,0.0,0), rg.Point3d(-0.0,-1724.4,0)], [rg.Point3d(-0.0,-2525.3,0), rg.Point3d(750.0,0.0,0), rg.Point3d(-0.0,2525.2,0), rg.Point3d(-750.0,0.0,0), rg.Point3d(-0.0,-2525.3,0)]],
-        '양보': [[rg.Point3d(501.0,1503.0,0), rg.Point3d(-501.0,1503.0,0), rg.Point3d(-0.0,-1503.0,0), rg.Point3d(501.0,1503.0,0)], [rg.Point3d(-0.0,-588.8,0), rg.Point3d(-298.5,1202.4,0), rg.Point3d(298.5,1202.4,0), rg.Point3d(-0.0,-588.8,0)]],
-    }
     ARROW_MASTER_DB = {
         'S': [[rg.Point3d(0.0,2500.0,0), rg.Point3d(300.0,300.0,0), rg.Point3d(75.0,300.0,0), rg.Point3d(75.0,-2500.0,0), rg.Point3d(-75.0,-2500.0,0), rg.Point3d(-75.0,300.0,0), rg.Point3d(-300.0,300.0,0), rg.Point3d(0.0,2500.0,0)]],
         'SX': [[rg.Point3d(-75.0,-620.1,0), rg.Point3d(75.0,-620.1,0), rg.Point3d(75.0,300.0,0), rg.Point3d(300.0,300.0,0), rg.Point3d(0.0,2500.0,0), rg.Point3d(-300.0,300.0,0), rg.Point3d(-75.0,300.0,0), rg.Point3d(-75.0,-620.1,0)], [rg.Point3d(86.6,-1100.0,0), rg.Point3d(565.0,-271.5,0), rg.Point3d(435.0,-196.5,0), rg.Point3d(0.0,-950.0,0), rg.Point3d(-435.0,-196.5,0), rg.Point3d(-565.0,-271.5,0), rg.Point3d(-86.6,-1100.0,0), rg.Point3d(-565.0,-1928.5,0), rg.Point3d(-435.0,-2003.5,0), rg.Point3d(0.0,-1250.0,0), rg.Point3d(435.0,-2003.5,0), rg.Point3d(565.0,-1928.5,0), rg.Point3d(86.6,-1100.0,0)], [rg.Point3d(75.0,-1579.9,0), rg.Point3d(-75.0,-1579.9,0), rg.Point3d(-75.0,-2500.0,0), rg.Point3d(75.0,-2500.0,0), rg.Point3d(75.0,-1579.9,0)]],
@@ -85,27 +107,19 @@ class MarkGenerator:
         return curves
 
     @staticmethod
-    def get_symbol_custom(name):
-        combined_curves = []
-        pts_list = MarkGenerator.SYMBOL_DB.get(name, [])
-        for pts in pts_list:
-            combined_curves.append(rg.Polyline(pts).ToPolylineCurve())
-        return combined_curves
-
-    @staticmethod
     def get_number_arranged(input_str):
         combined_curves = []
-        digits = [c for c in input_str if c in MarkGenerator.DIGIT_DB]
+        digits = [c for c in input_str if has_digit(c)]
         if not digits: return []
         gap = 100
         total_width = (len(digits) * MarkGenerator.W) + ((len(digits)-1) * gap)
         start_x = -total_width / 2.0
         for i, char in enumerate(digits):
-            pts_list = MarkGenerator.DIGIT_DB[char]
             x_offset = start_x + (i * (MarkGenerator.W + gap))
-            for pts in pts_list:
-                moved_pts = [rg.Point3d(p.X + x_offset, p.Y - 1500, 0) for p in pts]
-                combined_curves.append(rg.Polyline(moved_pts).ToPolylineCurve())
+            move = rg.Transform.Translation(x_offset, -1500.0, 0.0)
+            for curve in create_digit_curves(char):
+                curve.Transform(move)
+                combined_curves.append(curve)
         return combined_curves
     
     @staticmethod
@@ -169,6 +183,15 @@ class SimpleConduit(rd.DisplayConduit):
         rd.DisplayConduit.__init__(self)
         self.curves = []
         self.color = System.Drawing.Color.Red
+
+    def CalculateBoundingBox(self, e):
+        bbox = rg.BoundingBox.Empty
+        for curve in self.curves:
+            if curve and curve.IsValid:
+                bbox.Union(curve.GetBoundingBox(True))
+        if bbox.IsValid:
+            e.IncludeBoundingBox(bbox)
+
     def DrawForeground(self, e):
         for c in self.curves:
             if c and c.IsValid: e.Display.DrawCurve(c, self.color, 2)
@@ -196,9 +219,12 @@ class CategoryIconPicker(forms.Dialog[str]):
         self.Content = layout
 
 class BaseMarkDialog(forms.Dialog[bool]):
-    def __init__(self, base_plane, mode):
+    def __init__(self, base_plane, mode, target_width=None, target_height=None):
         self.Title = "세부 설정 - " + mode
         self.base_plane = base_plane
+        self.target_width = target_width
+        self.target_height = target_height
+        self.last_preview_error = None
         
         # 💡 상태 변수 3가지로 확장 (좌우, 상하, 회전)
         self.mirror_x = False
@@ -257,8 +283,22 @@ class BaseMarkDialog(forms.Dialog[bool]):
         self.rot_180 = not self.rot_180
         self.UpdatePreview()
         
+    def OnPreviewError(self, message):
+        self.btn_ok.Enabled = False
+
+    def OnPreviewReady(self, has_geometry):
+        pass
+
     def UpdatePreview(self):
-        parts = self.GetGeometry()
+        self.last_preview_error = None
+        try:
+            parts = self.GetGeometry()
+        except RoadTextError as error:
+            self.last_preview_error = error.message_text
+            self.conduit.curves = []
+            self.OnPreviewError(error.message_text)
+            Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+            return False
         
         plane = rg.Plane(self.base_plane)
         plane.Translate(plane.ZAxis * 0.5)
@@ -282,7 +322,9 @@ class BaseMarkDialog(forms.Dialog[bool]):
                 c = p.DuplicateCurve()
                 c.Transform(final_xform)
                 self.conduit.curves.append(c)
+        self.OnPreviewReady(len(self.conduit.curves) > 0)
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
+        return len(self.conduit.curves) > 0
         
     def OnClosed(self, e):
         self.conduit.Enabled = False
@@ -337,89 +379,491 @@ class ArrowDialog(BaseMarkDialog):
 
 class SymbolDialog(BaseMarkDialog):
     def SetupUI(self):
-        self.list = forms.ListBox(); self.list.DataStore = ["양보", "횡단보도"]; self.list.SelectedIndex = 0
-        self.list.SelectedIndexChanged += lambda s,e: self.UpdatePreview()
-        self.layout.AddRow(forms.Label(Text="심볼 선택:"))
+        self.list = forms.ListBox()
+        self.list.DataStore = PICTOGRAM_LABELS
+        self.list.SelectedIndex = 0
+        self.list.SelectedIndexChanged += lambda sender, e: self.UpdatePreview()
+        self.lbl_status = forms.Label(
+            Text=u"픽토그램을 선택하세요.",
+            TextColor=drawing.Colors.Gray
+        )
+        self.layout.AddRow(forms.Label(Text=u"교통 픽토그램 선택:"))
         self.layout.AddRow(self.list)
+        self.layout.AddRow(self.lbl_status)
+
+    def OnPreviewError(self, message):
+        BaseMarkDialog.OnPreviewError(self, message)
+        self.lbl_status.Text = (
+            message.splitlines()[0] if message else u"픽토그램 생성 실패"
+        )
+        self.lbl_status.TextColor = drawing.Colors.Red
+
+    def OnPreviewReady(self, has_geometry):
+        self.btn_ok.Enabled = has_geometry
+        if has_geometry:
+            self.lbl_status.Text = u"픽토그램 프리뷰가 갱신되었습니다."
+            self.lbl_status.TextColor = drawing.Colors.DodgerBlue
+
     def GetGeometry(self):
-        return MarkGenerator.get_symbol_custom(self.list.SelectedValue)
+        label = self.list.SelectedValue
+        layer_name = get_pictogram_layer_name(label)
+        if not layer_name:
+            raise RoadTextError(
+                u"등록되지 않은 픽토그램입니다: {0}".format(label)
+            )
+
+        library = get_road_glyph_library()
+        curves = library.duplicate_glyph(layer_name)
+        if not curves:
+            raise RoadTextError(
+                u"픽토그램 글리프를 찾을 수 없습니다.\n\n"
+                u"표시 이름: {0}\n"
+                u"누락 레이어: {1}".format(label, layer_name)
+            )
+        return curves
 
 class TextDialog(BaseMarkDialog):
+    """기존 숫자와 통합 도로문자를 함께 제공하는 대화상자입니다."""
+
     def SetupUI(self):
-        self.txt = forms.TextBox()
-        self.txt.PlaceholderText = "숫자 입력 (예: 80)"
+        self.rb_number = forms.RadioButton(Text=u"숫자")
+        self.rb_roadtext = forms.RadioButton(
+            self.rb_number,
+            Text=u"통합 도로문자"
+        )
+        mode_layout = forms.DynamicLayout()
+        mode_layout.BeginHorizontal()
+        mode_layout.Add(self.rb_number)
+        mode_layout.Add(self.rb_roadtext)
+        mode_layout.EndHorizontal()
+
+        self.lbl_input = forms.Label(Text=u"표시할 숫자:")
+        self.txt = forms.TextArea()
+        self.txt.Height = 72
+        self.txt.Wrap = False
+        self.txt.AcceptsReturn = True
+        self.txt.AcceptsTab = False
         self.txt.KeyDown += self.OnTextKeyDown
-        
-        self.cb_border = forms.CheckBox(Text="원형 테두리 적용 (속도표시)")
-        self.cb_border.CheckedChanged += lambda s, e: self.UpdatePreview()
-        
-        self.btn_confirm = forms.Button(Text="텍스트 확인")
-        self.btn_confirm.Click += lambda s,e: self.UpdatePreview()
-        
-        self.layout.AddRow(forms.Label(Text="표시할 숫자:"))
+
+        self.lbl_input_hint = forms.Label(
+            Text=u"Enter: 적용",
+            TextColor=drawing.Colors.Gray
+        )
+
+        initial_width = (
+            self.target_width
+            if self.target_width is not None and self.target_width > 0.0
+            else 3000.0
+        )
+        self.lbl_max_width = forms.Label(Text=u"글자 배치 최대폭:")
+        self.txt_max_width = forms.TextBox(
+            Text=u"{0:g}".format(initial_width)
+        )
+        self.txt_max_width.Enabled = False
+        self.txt_max_width.KeyDown += self.OnNumericSettingKeyDown
+
+        self.lbl_letter_gap = forms.Label(Text=u"자간:")
+        self.txt_letter_gap = forms.TextBox(Text=u"100")
+        self.txt_letter_gap.Enabled = False
+        self.txt_letter_gap.KeyDown += self.OnNumericSettingKeyDown
+
+        self.lbl_alignment = forms.Label(Text=u"문자 정렬:")
+        self.rb_align_center = forms.RadioButton(Text=u"가운데 정렬")
+        self.rb_align_justify = forms.RadioButton(
+            self.rb_align_center,
+            Text=u"양쪽 정렬"
+        )
+        self.rb_align_center.Checked = True
+        self.rb_align_center.Enabled = False
+        self.rb_align_justify.Enabled = False
+        self.rb_align_justify.CheckedChanged += (
+            lambda sender, e: self.UpdatePreview()
+        )
+
+        alignment_layout = forms.DynamicLayout()
+        alignment_layout.BeginHorizontal()
+        alignment_layout.Add(self.rb_align_center)
+        alignment_layout.Add(self.rb_align_justify)
+        alignment_layout.EndHorizontal()
+
+        self.cb_border = forms.CheckBox(
+            Text=u"원형 테두리 적용 (속도표시)"
+        )
+        self.cb_border.CheckedChanged += lambda sender, e: self.UpdatePreview()
+
+        self.btn_confirm = forms.Button(Text=u"텍스트 적용")
+        self.btn_confirm.Click += self.OnApplyText
+
+        self.lbl_text_status = forms.Label(
+            Text=u"문자를 입력하고 Enter 또는 텍스트 적용을 누르세요.",
+            TextColor=drawing.Colors.Gray
+        )
+        self.btn_ok.Enabled = False
+
+        self.layout.AddRow(forms.Label(Text=u"문자 종류:"), mode_layout)
+        self.layout.AddRow(self.lbl_input)
         self.layout.AddRow(self.txt)
+        self.layout.AddRow(self.lbl_input_hint)
+        self.layout.AddRow(self.lbl_max_width, self.txt_max_width)
+        self.layout.AddRow(self.lbl_letter_gap, self.txt_letter_gap)
+        self.layout.AddRow(self.lbl_alignment, alignment_layout)
         self.layout.AddRow(self.cb_border)
         self.layout.AddRow(self.btn_confirm)
-        
+        self.layout.AddRow(self.lbl_text_status)
+
+        self.rb_roadtext.Checked = True
+        self.rb_roadtext.CheckedChanged += self.OnTextModeChanged
+        self.OnTextModeChanged(None, None)
+
+    def IsRoadTextMode(self):
+        return bool(self.rb_roadtext.Checked)
+
+    def OnTextModeChanged(self, sender, e):
+        road_text_mode = self.IsRoadTextMode()
+        if road_text_mode:
+            self.lbl_input.Text = u"표시할 도로문자:"
+            self.lbl_input_hint.Text = (
+                u"Enter: 적용 / Shift+Enter: 줄바꿈"
+            )
+            self.cb_border.Checked = False
+        else:
+            self.lbl_input.Text = u"표시할 숫자:"
+            self.lbl_input_hint.Text = u"Enter: 적용"
+
+        self.cb_border.Enabled = not road_text_mode
+        self.lbl_max_width.Enabled = road_text_mode
+        self.txt_max_width.Enabled = road_text_mode
+        self.lbl_letter_gap.Enabled = road_text_mode
+        self.txt_letter_gap.Enabled = road_text_mode
+        self.lbl_alignment.Enabled = road_text_mode
+        self.rb_align_center.Enabled = road_text_mode
+        self.rb_align_justify.Enabled = road_text_mode
+        self.UpdatePreview()
+
+    def OnApplyText(self, sender, e):
+        if self.IsRoadTextMode():
+            self.txt.Text = RoadTextComposer.normalize_text(self.txt.Text)
+
+        if not self.UpdatePreview() and self.last_preview_error:
+            title = (
+                u"통합 도로문자"
+                if self.IsRoadTextMode()
+                else u"숫자 도로표시"
+            )
+            rs.MessageBox(self.last_preview_error, 0, title)
+
     def OnTextKeyDown(self, sender, e):
         if e.Key == forms.Keys.Enter:
-            self.UpdatePreview()
+            if self.IsRoadTextMode() and e.Shift:
+                return
+            self.OnApplyText(sender, e)
             e.Handled = True
-            
+
+    def OnNumericSettingKeyDown(self, sender, e):
+        if e.Key == forms.Keys.Enter:
+            self.OnApplyText(sender, e)
+            e.Handled = True
+
+    def GetRoadTextMaxWidth(self):
+        value_text = u"{0}".format(
+            self.txt_max_width.Text or u""
+        ).strip().replace(u",", u"")
+        try:
+            max_width = float(value_text)
+        except (TypeError, ValueError):
+            raise RoadTextError(u"글자 배치 최대폭은 숫자로 입력해주세요.")
+        if max_width <= 0.0:
+            raise RoadTextError(u"글자 배치 최대폭은 0보다 커야 합니다.")
+        return max_width
+
+    def GetRoadTextLetterGap(self):
+        value_text = u"{0}".format(
+            self.txt_letter_gap.Text or u""
+        ).strip().replace(u",", u"")
+        try:
+            letter_gap = float(value_text)
+        except (TypeError, ValueError):
+            raise RoadTextError(u"자간은 숫자로 입력해주세요.")
+        if letter_gap < 0.0:
+            raise RoadTextError(u"자간은 0 이상이어야 합니다.")
+        return letter_gap
+
+    def GetRoadTextAlignment(self):
+        if self.rb_align_justify.Checked:
+            return "justify"
+        return "center"
+
+    def OnPreviewError(self, message):
+        BaseMarkDialog.OnPreviewError(self, message)
+        first_line = message.splitlines()[0] if message else u"생성 실패"
+        self.lbl_text_status.Text = first_line
+        self.lbl_text_status.TextColor = drawing.Colors.Red
+
+    def OnPreviewReady(self, has_geometry):
+        self.btn_ok.Enabled = has_geometry
+        if has_geometry:
+            if self.IsRoadTextMode():
+                self.lbl_text_status.Text = u"통합 도로문자 프리뷰가 갱신되었습니다."
+            else:
+                self.lbl_text_status.Text = u"숫자 프리뷰가 갱신되었습니다."
+            self.lbl_text_status.TextColor = drawing.Colors.DodgerBlue
+        elif not self.txt.Text:
+            self.lbl_text_status.Text = (
+                u"문자를 입력하고 Enter 또는 텍스트 적용을 누르세요."
+            )
+            self.lbl_text_status.TextColor = drawing.Colors.Gray
+
     def GetGeometry(self):
         if not self.txt.Text:
             return []
-            
+
+        if self.IsRoadTextMode():
+            library = get_road_glyph_library()
+            composer = RoadTextComposer(library)
+            return composer.compose_text(
+                self.txt.Text,
+                self.GetRoadTextMaxWidth(),
+                self.GetRoadTextAlignment(),
+                self.GetRoadTextLetterGap()
+            )
+
+        invalid_chars = [
+            char for char in self.txt.Text
+            if char not in u"0123456789"
+        ]
+        if invalid_chars:
+            raise RoadTextError(u"숫자 입력기에서는 0~9만 입력할 수 있습니다.")
+
         if self.cb_border.Checked:
             return MarkGenerator.get_circled_text(self.txt.Text)
-        else:
-            return MarkGenerator.get_number_arranged(self.txt.Text)
+        return MarkGenerator.get_number_arranged(self.txt.Text)
 
 # ==============================================================================
-# [3. 메인 실행부]
+# [4. 최종 Curve 생성]
 # ==============================================================================
-def main():
+def bake_mark_curves(curves, layer_name):
+    """프리뷰 Curve 전체를 하나의 Undo 기록으로 문서에 추가합니다."""
+    if not curves:
+        return []
+
+    doc = Rhino.RhinoDoc.ActiveDoc
+    created_ids = []
+    undo_id = doc.BeginUndoRecord("Create Road Mark")
+
+    try:
+        layer_index = doc.Layers.FindByFullPath(layer_name, -1)
+        if layer_index < 0:
+            layer = Rhino.DocObjects.Layer()
+            layer.Name = layer_name
+            layer.Color = System.Drawing.Color.White
+            layer_index = doc.Layers.Add(layer)
+
+        if layer_index < 0:
+            raise RoadTextError(
+                u"결과 레이어를 만들 수 없습니다: {0}".format(layer_name)
+            )
+
+        attributes = Rhino.DocObjects.ObjectAttributes()
+        attributes.LayerIndex = layer_index
+        attributes.ColorSource = (
+            Rhino.DocObjects.ObjectColorSource.ColorFromObject
+        )
+        attributes.ObjectColor = System.Drawing.Color.White
+
+        for curve in curves:
+            if curve is None or not curve.IsValid:
+                continue
+            object_id = doc.Objects.AddCurve(curve, attributes)
+            if object_id == System.Guid.Empty:
+                raise RoadTextError(u"도로표시 Curve를 문서에 추가하지 못했습니다.")
+            created_ids.append(object_id)
+
+        if not created_ids:
+            raise RoadTextError(u"생성된 도로표시 Curve가 없습니다.")
+    except Exception:
+        for object_id in created_ids:
+            doc.Objects.Delete(object_id, True)
+        raise
+    finally:
+        if undo_id > 0:
+            doc.EndUndoRecord(undo_id)
+
+    doc.Views.Redraw()
+    return created_ids
+
+
+# ==============================================================================
+# [5. 배치 기준 입력]
+# ==============================================================================
+def get_placement_mode():
+    getter = Rhino.Input.Custom.GetOption()
+    getter.SetCommandPrompt(
+        u"배치 방식 선택 (Rectangle=사각형, TwoPoint=두 점) <Rectangle>"
+    )
+    getter.AcceptNothing(True)
+
+    rectangle_index = getter.AddOption("Rectangle")
+    two_point_index = getter.AddOption("TwoPoint")
+    result = getter.Get()
+
+    if result == Rhino.Input.GetResult.Nothing:
+        return "rectangle"
+    if result != Rhino.Input.GetResult.Option:
+        return None
+
+    option_index = getter.OptionIndex()
+    if option_index == rectangle_index:
+        return "rectangle"
+    if option_index == two_point_index:
+        return "two_point"
+    return None
+
+
+def get_rectangle_placement():
     while True:
-        target = rs.GetObject("노면표시를 배치할 사각형 선택 (ESC: 종료)", 4)
-        if not target: break
+        target = rs.GetObject(
+            "노면표시를 배치할 사각형 선택 (ESC: 종료)",
+            4
+        )
+        if not target:
+            return None
+
         curve = rs.coercecurve(target)
         if not curve or not curve.IsClosed:
             print("닫힌 커브를 선택해주세요.")
             continue
+
         amp = rg.AreaMassProperties.Compute(curve)
-        center = amp.Centroid
-        success, pl = curve.TryGetPolyline()
-        if not success: continue
-        pts = list(pl)
-        v1 = pts[1] - pts[0]
-        v2 = pts[3] - pts[0]
+        success, polyline = curve.TryGetPolyline()
+        if amp is None or not success:
+            print("폴리라인 사각형을 선택해주세요.")
+            continue
+
+        points = list(polyline)
+        if len(points) < 4:
+            print("폴리라인 사각형을 선택해주세요.")
+            continue
+
+        v1 = points[1] - points[0]
+        v2 = points[3] - points[0]
         if v1.Length >= v2.Length:
             v_forward, v_side = v1, v2
         else:
             v_forward, v_side = v2, v1
+
+        target_height = v_forward.Length
+        target_width = v_side.Length
         v_forward.Unitize()
         v_side.Unitize()
-        base_plane = rg.Plane(center, v_side, v_forward)
+        base_plane = rg.Plane(amp.Centroid, v_side, v_forward)
+        return base_plane, target_width, target_height
+
+
+def create_two_point_plane(first_point, direction_point, tolerance):
+    origin = rg.Point3d(first_point)
+    y_axis = rg.Vector3d(
+        direction_point.X - origin.X,
+        direction_point.Y - origin.Y,
+        0.0
+    )
+
+    if y_axis.Length <= tolerance:
+        return None
+
+    y_axis.Unitize()
+    x_axis = rg.Vector3d.CrossProduct(y_axis, rg.Vector3d.ZAxis)
+    return rg.Plane(origin, x_axis, y_axis)
+
+
+def get_two_point_placement():
+    first_point = rs.GetPoint("노면표시 배치 원점 선택 (ESC: 종료)")
+    if first_point is None:
+        return None
+
+    doc = Rhino.RhinoDoc.ActiveDoc
+    tolerance = doc.ModelAbsoluteTolerance if doc else 0.001
+
+    while True:
+        direction_point = rs.GetPoint(
+            "XY 평면 기준 +Y 방향점 선택 (ESC: 종료)",
+            first_point
+        )
+        if direction_point is None:
+            return None
+
+        base_plane = create_two_point_plane(
+            first_point,
+            direction_point,
+            tolerance
+        )
+        if base_plane is not None:
+            return base_plane, None, None
+
+        Rhino.RhinoApp.WriteLine(
+            u"두 점의 XY 위치가 너무 가깝습니다. 방향점을 다시 선택하세요."
+        )
+
+
+def get_placement(placement_mode):
+    if placement_mode == "two_point":
+        return get_two_point_placement()
+    return get_rectangle_placement()
+
+
+# ==============================================================================
+# [6. 메인 실행부]
+# ==============================================================================
+def main():
+    reset_road_glyph_library()
+
+    placement_mode = get_placement_mode()
+    if placement_mode is None:
+        return
+
+    while True:
+        placement = get_placement(placement_mode)
+        if placement is None:
+            break
+        base_plane, target_width, target_height = placement
+
         while True:
             picker = CategoryIconPicker()
             Rhino.UI.EtoExtensions.ShowSemiModal(picker, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
             mode = getattr(picker, 'Result', None)
             if mode is None: break
-            if mode == "방향표시": dlg = ArrowDialog(base_plane, mode)
-            elif mode == "심볼": dlg = SymbolDialog(base_plane, mode)
-            else: dlg = TextDialog(base_plane, mode)
+            if mode == "방향표시":
+                dlg = ArrowDialog(
+                    base_plane, mode, target_width, target_height
+                )
+            elif mode == "심볼":
+                dlg = SymbolDialog(
+                    base_plane, mode, target_width, target_height
+                )
+            else:
+                dlg = TextDialog(
+                    base_plane, mode, target_width, target_height
+                )
             Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
             if getattr(dlg, 'Result', False):
                 rs.EnableRedraw(False)
-                layer_name = "RoadMark_" + str(mode)
-                if not rs.IsLayer(layer_name): rs.AddLayer(layer_name)
-                for c in dlg.conduit.curves:
-                    if c and c.IsValid:
-                        obj_id = Rhino.RhinoDoc.ActiveDoc.Objects.AddCurve(c)
-                        rs.ObjectLayer(obj_id, layer_name)
-                        rs.ObjectColor(obj_id, [255, 255, 255])
-                rs.EnableRedraw(True)
-                break
+                try:
+                    layer_name = "RoadMark_" + str(mode)
+                    bake_mark_curves(dlg.conduit.curves, layer_name)
+                    break
+                except RoadTextError as error:
+                    rs.MessageBox(error.message_text, 0, "도로표시 생성")
+                    continue
+                except Exception as error:
+                    rs.MessageBox(
+                        u"도로표시 생성 중 오류가 발생했습니다.\n\n{0}".format(
+                            error
+                        ),
+                        0,
+                        "도로표시 생성"
+                    )
+                    continue
+                finally:
+                    rs.EnableRedraw(True)
             else:
                 continue
 

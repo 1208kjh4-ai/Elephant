@@ -1819,14 +1819,6 @@ def get_edit_state_from_objref(doc, objref):
 def main():
     doc = Rhino.RhinoDoc.ActiveDoc
 
-    if not doc.Path:
-        res = rs.MessageBox("크래시 등 예기치 못한 종료에 대비하여\n작업 전 파일을 먼저 저장하시겠습니까?", 4 + 32, "안전 장치 (저장 권장)")
-        if res == 6:
-            rs.Command("_Save", True)
-    elif doc.Modified:
-        rs.Command("_-Save _Enter", False)
-        print("[안전 장치] 작업 보호를 위해 현재 파일이 자동 저장되었습니다.")
-
     base_crv = None
     initial_rise = None
     edit_state = None

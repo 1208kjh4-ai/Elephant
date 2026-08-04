@@ -1,0 +1,31 @@
+# -*- coding: utf-8 -*-
+"""Shared System.Drawing colors for auditorium preview geometry."""
+
+from System.Drawing import Color
+
+
+PREVIEW_FLOOR = Color.FromArgb(35, 170, 220)
+PREVIEW_SEAT = Color.FromArgb(105, 200, 255)
+PREVIEW_SIGHT = Color.FromArgb(115, 155, 255)
+PREVIEW_POINT = Color.FromArgb(255, 210, 70)
+PREVIEW_WARNING = Color.FromArgb(235, 55, 55)
+PREVIEW_REFERENCE = Color.FromArgb(255, 90, 20)
+PREVIEW_FULL_STAGE_SIGHT = Color.FromArgb(255, 145, 35)
+PREVIEW_MAIN_STAGE = Color.FromArgb(230, 125, 35)
+PREVIEW_AUX_STAGE = Color.FromArgb(175, 95, 210)
+PREVIEW_STAGE_CLEARANCE = Color.FromArgb(245, 195, 70)
+PREVIEW_STAGE_SECTION = Color.FromArgb(80, 210, 125)
+PREVIEW_GRID = Color.FromArgb(245, 80, 185)
+PREVIEW_UNDERSTAGE = Color.FromArgb(70, 205, 220)
+PREVIEW_AUDITORIUM_CEILING = Color.FromArgb(150, 225, 245)
+PREVIEW_STAGE_APRON = Color.FromArgb(240, 145, 55)
+PREVIEW_ORCHESTRA_PIT = Color.FromArgb(75, 180, 235)
+PREVIEW_AISLE = Color.FromArgb(245, 185, 65)
+PREVIEW_BALCONY = Color.FromArgb(155, 115, 235)
+PREVIEW_BALCONY_SECOND = Color.FromArgb(90, 185, 235)
+PREVIEW_BALCONY_RAIL = Color.FromArgb(255, 175, 45)
+PREVIEW_SECTION_DIMENSION = Color.FromArgb(70, 205, 80)
+PREVIEW_PLAN_ROW_GUIDE = Color.FromArgb(105, 125, 145)
+PREVIEW_3D_CHAIR = Color.FromArgb(105, 200, 255)
+PREVIEW_3D_ARMREST = Color.FromArgb(75, 105, 135)
+FLOOR_SURFACE_PREVIEW_TRANSPARENCY = 0.55

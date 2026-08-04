@@ -281,38 +281,153 @@ class RevolvingDoorDialog(forms.Dialog[bool]):
         self.conduit.Enabled = False
         Rhino.RhinoDoc.ActiveDoc.Views.Redraw()
 
-# ==============================================================================
-# [3] 메인 실행부 (모서리 직접 선택 기능 포함)
-# ==============================================================================
-def main():
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("개구부의 두 수직 모서리(Edge)를 선택하세요. (순서 무관)")
-    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
-    go.SubObjectSelect = True 
-    go.GetMultiple(2, 2)
-    
-    if go.CommandResult() != Rhino.Commands.Result.Success:
-        return
-        
-    c1, c2 = go.Object(0).Curve(), go.Object(1).Curve()
-    
+def make_base_from_two_vertical_curves(c1, c2):
+    if not c1 or not c2:
+        return None
+
     def get_bottom_top(c):
         s, e = c.PointAtStart, c.PointAtEnd
         return (e, s) if s.Z > e.Z else (s, e)
-        
+
     p1_b, p1_t = get_bottom_top(c1)
     p2_b, p2_t = get_bottom_top(c2)
-    
+
     if p1_b.X > p2_b.X or (abs(p1_b.X - p2_b.X) < 1e-4 and p1_b.Y > p2_b.Y):
         p1_b, p2_b = p2_b, p1_b
         p1_t, p2_t = p2_t, p1_t
-        
-    z_vec = (p1_t - p1_b); height = z_vec.Length; z_vec.Unitize()
-    x_vec = (p2_b - p1_b); width = x_vec.Length; x_vec.Unitize()
-    y_vec = Rhino.Geometry.Vector3d.CrossProduct(z_vec, x_vec); y_vec.Unitize()
-    
-    base_plane = rg.Plane(p1_b, x_vec, y_vec)
-    
+
+    z_vec = p1_t - p1_b
+    height = z_vec.Length
+    if height < 1e-4:
+        return None
+    z_vec.Unitize()
+
+    x_vec = p2_b - p1_b
+    width = x_vec.Length
+    if width < 1e-4:
+        return None
+    x_vec.Unitize()
+
+    y_vec = rg.Vector3d.CrossProduct(z_vec, x_vec)
+    if y_vec.Length < 1e-4:
+        return None
+    y_vec.Unitize()
+
+    return rg.Plane(p1_b, x_vec, y_vec), width, height
+
+
+def get_3point_rectangle(first_point):
+    p1 = rg.Point3d(first_point)
+
+    gp2 = Rhino.Input.Custom.GetPoint()
+    gp2.SetCommandPrompt("두 번째 코너를 지정하세요 (문 폭 및 방향)")
+    gp2.SetBasePoint(p1, True)
+    gp2.DrawLineFromPoint(p1, True)
+    if gp2.Get() != Rhino.Input.GetResult.Point:
+        return None
+    p2 = gp2.Point()
+
+    x_vec = p2 - p1
+    width = x_vec.Length
+    if width < 1e-4:
+        return None
+
+    x_dir = rg.Vector3d(x_vec)
+    x_dir.Unitize()
+
+    def on_dynamic_draw(sender, e):
+        cur_pt = e.CurrentPoint
+        v = cur_pt - p1
+        dot = v.X * x_dir.X + v.Y * x_dir.Y + v.Z * x_dir.Z
+        z_vec = v - (x_dir * dot)
+        p3 = p2 + z_vec
+        p4 = p1 + z_vec
+        e.Display.DrawPolyline([p1, p2, p3, p4, p1], System.Drawing.Color.Black, 2)
+
+    gp3 = Rhino.Input.Custom.GetPoint()
+    gp3.SetCommandPrompt("세 번째 코너를 지정하세요 (문 높이)")
+    gp3.SetBasePoint(p1, True)
+    gp3.DynamicDraw += on_dynamic_draw
+    if gp3.Get() != Rhino.Input.GetResult.Point:
+        return None
+    cur_pt = gp3.Point()
+
+    v = cur_pt - p1
+    dot = v.X * x_dir.X + v.Y * x_dir.Y + v.Z * x_dir.Z
+    z_vec = v - (x_dir * dot)
+    height = z_vec.Length
+    if height < 1e-4:
+        return None
+
+    z_dir = rg.Vector3d(z_vec)
+    z_dir.Unitize()
+    y_dir = rg.Vector3d.CrossProduct(z_dir, x_dir)
+    if y_dir.Length < 1e-4:
+        return None
+    y_dir.Unitize()
+
+    return rg.Plane(p1, x_dir, y_dir), width, height
+
+
+def get_spinning_input_from_curves():
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("개구부의 두 수직 커브 또는 모서리를 선택하세요. (순서 무관)")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
+    go.SubObjectSelect = True
+    try:
+        go.EnablePreSelect(False, True)
+    except:
+        pass
+    try:
+        go.GroupSelect = False
+    except:
+        pass
+
+    get_rc = go.GetMultiple(2, 2)
+    if get_rc != Rhino.Input.GetResult.Object:
+        return
+
+    try:
+        c1 = go.Object(0).Curve()
+        c2 = go.Object(1).Curve()
+    except:
+        c1, c2 = None, None
+
+    result = make_base_from_two_vertical_curves(c1, c2)
+    if not result:
+        rs.MessageBox(
+            "신규 생성에는 유효한 수직 커브 또는 모서리 두 개가 필요합니다.",
+            0,
+            "선택 오류"
+        )
+    return result
+
+
+def get_spinning_input():
+    gp1 = Rhino.Input.Custom.GetPoint()
+    gp1.SetCommandPrompt("신규 회전문 사각형의 첫 번째 코너를 지정하세요.")
+    opt_curves = gp1.AddOption("SelectCurves")
+    get_rc = gp1.Get()
+
+    if get_rc == Rhino.Input.GetResult.Point:
+        return get_3point_rectangle(gp1.Point())
+
+    if get_rc == Rhino.Input.GetResult.Option and gp1.Option().Index == opt_curves:
+        return get_spinning_input_from_curves()
+
+    return None
+
+
+# ==============================================================================
+# [3] 메인 실행부 (사각형 기본 / SelectCurves 옵션)
+# ==============================================================================
+def main():
+    input_data = get_spinning_input()
+    if not input_data:
+        return
+
+    base_plane, width, height = input_data
+
     dlg = RevolvingDoorDialog(base_plane, width, height)
     rc = Rhino.UI.EtoExtensions.ShowSemiModal(dlg, Rhino.RhinoDoc.ActiveDoc, Rhino.UI.RhinoEtoApp.MainWindow)
     

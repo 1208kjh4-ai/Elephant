@@ -47,10 +47,10 @@ Rhino 8 = %APPDATA%\McNeel\Rhinoceros\8.0\scripts\Elephant
 일부 기능은 Python 파일 외의 보조 파일을 사용합니다. 아래 파일과 폴더가 함께 복사되어 있는지 확인하세요.
 
 - `commands` 폴더
-- `system` 폴더
 - `ElephantTools.rhc`
 - `ElephantToolsR7.rui`
 - `Source.3dm`
+- `korroadfont.3dm`
 - `RoadMarkDB.json`
 - `shapefile.py`
 - `LICENSE`
@@ -64,11 +64,11 @@ Rhino 8 = %APPDATA%\McNeel\Rhinoceros\8.0\scripts\Elephant
 ```text
 Elephant
 ├─ commands
-├─ system
 ├─ icons
 ├─ ElephantTools.rhc
 ├─ ElephantToolsR7.rui
 ├─ Source.3dm
+├─ korroadfont.3dm
 ├─ RoadMarkDB.json
 ├─ shapefile.py
 ├─ LICENSE
@@ -76,7 +76,7 @@ Elephant
 └─ README.md
 ```
 
-`commands` 폴더에는 실제 실행 도구가 들어 있고, `system` 폴더에는 설치, 업데이트, Alias 등록 관련 스크립트가 들어 있습니다.
+`commands` 폴더에는 실제 실행 도구와 단축키 안내 스크립트가 들어 있습니다.
 
 ## 툴바 설치
 
@@ -120,7 +120,7 @@ Elephant Tools에는 다음과 같은 도구들이 포함되어 있습니다.
 
 먼저 `Elephant` 폴더가 정확한 위치에 있는지 확인하세요. ZIP 압축을 풀 때 `Elephant-main` 폴더가 한 단계 더 들어가 있으면 명령어가 실행되지 않을 수 있습니다.
 
-또한 `commands`와 `system` 폴더가 `Elephant` 폴더 바로 아래에 있는지 확인하세요.
+또한 `commands` 폴더가 `Elephant` 폴더 바로 아래에 있는지 확인하세요.
 
 ### SHP 관련 기능이 실행되지 않을 때
 
@@ -130,7 +130,7 @@ SHP 기능이 실행되지 않으면 `shapefile.py` 파일이 `Elephant` 폴더 
 
 ### 아이콘이나 일부 기능이 보이지 않을 때
 
-`icons` 폴더, `Source.3dm`, `RoadMarkDB.json` 파일이 `Elephant` 폴더 안에 함께 있는지 확인하세요.
+`icons` 폴더, `Source.3dm`, `korroadfont.3dm`, `RoadMarkDB.json` 파일이 `Elephant` 폴더 안에 함께 있는지 확인하세요.
 
 ## 사용 조건
 

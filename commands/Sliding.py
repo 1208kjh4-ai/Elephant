@@ -1131,12 +1131,15 @@ def process_two_curves(c1, c2):
     return base_plane, width, height
 
 
-def get_3point_rectangle():
-    gp1 = Rhino.Input.Custom.GetPoint()
-    gp1.SetCommandPrompt("직사각형의 첫 번째 구석점을 지정하세요.")
-    if gp1.Get() != Rhino.Input.GetResult.Point:
-        return None, 0, 0
-    p1 = gp1.Point()
+def get_3point_rectangle(first_point=None):
+    if first_point is None:
+        gp1 = Rhino.Input.Custom.GetPoint()
+        gp1.SetCommandPrompt("직사각형의 첫 번째 구석점을 지정하세요.")
+        if gp1.Get() != Rhino.Input.GetResult.Point:
+            return None, 0, 0
+        p1 = gp1.Point()
+    else:
+        p1 = rg.Point3d(first_point)
 
     gp2 = Rhino.Input.Custom.GetPoint()
     gp2.SetCommandPrompt("두 번째 점을 지정하세요 (너비 방향).")
@@ -1190,88 +1193,97 @@ def get_3point_rectangle():
     return base_plane, width, height
 
 
-def get_door_target_from_user():
+def get_sliding_input_from_curves():
+    go = Rhino.Input.Custom.GetObject()
+    go.SetCommandPrompt("신규 미닫이문의 두 수직 커브 또는 모서리를 선택하세요.")
+    go.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
+    go.SubObjectSelect = True
+    try:
+        go.EnablePreSelect(False, True)
+    except:
+        pass
+    try:
+        go.GroupSelect = False
+    except:
+        pass
+
+    res = go.GetMultiple(2, 2)
+    if res != Rhino.Input.GetResult.Object:
+        return None
+
+    try:
+        c1 = go.Object(0).Curve()
+        c2 = go.Object(1).Curve()
+    except:
+        c1, c2 = None, None
+
+    result = process_two_curves(c1, c2)
+    if not result:
+        rs.MessageBox(
+            "신규 생성에는 유효한 수직 커브 또는 모서리 두 개가 필요합니다.",
+            0,
+            "선택 오류"
+        )
+        return None
+
+    base_plane, width, height = result
+    return {"mode": "new", "base_plane": base_plane, "width": width, "height": height}
+
+
+def get_sliding_edit_input():
     while True:
-        # 첫 번째 선택에서 자동 판별한다.
-        # - 미닫이문 데이터가 있는 Brep/객체: 즉시 수정 모드
-        # - 일반 커브/엣지: 신규 생성용 첫 번째 수직 모서리로 보고 두 번째 모서리를 이어서 받음
-        go1 = Rhino.Input.Custom.GetObject()
-        go1.SetCommandPrompt("수정할 미닫이문 선택, 혹은 개구부의 수직 모서리 선택. Rectangle 옵션 사용 가능.")
-        go1.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter | Rhino.DocObjects.ObjectType.Brep
-        go1.SubObjectSelect = True
+        go = Rhino.Input.Custom.GetObject()
+        go.SetCommandPrompt("수정할 미닫이문 객체를 선택하세요.")
+        go.GeometryFilter = Rhino.DocObjects.ObjectType.AnyObject
+        go.SubObjectSelect = False
         try:
-            go1.EnablePreSelect(False, True)
+            go.EnablePreSelect(False, True)
         except:
             pass
         try:
-            go1.GroupSelect = False
+            go.GroupSelect = False
         except:
             pass
 
-        opt_rect = go1.AddOption("Rectangle")
-        res = go1.Get()
-
-        if res == Rhino.Input.GetResult.Cancel:
-            return None
-
-        if res == Rhino.Input.GetResult.Option:
-            if go1.Option().Index == opt_rect:
-                base_plane, width, height = get_3point_rectangle()
-                if base_plane is not None:
-                    return {"mode": "new", "base_plane": base_plane, "width": width, "height": height}
-                return None
-
+        res = go.Get()
         if res != Rhino.Input.GetResult.Object:
             return None
 
-        # 기존 미닫이문 객체라면 별도 Edit/New 질문 없이 바로 수정 팝업으로 넘어간다.
-        edit_data = _try_get_edit_data_from_getobject(go1)
+        edit_data = _try_get_edit_data_from_getobject(go)
         if edit_data:
             return {"mode": "edit", "edit_data": edit_data}
 
-        # 미닫이문이 아니면 신규 생성용 첫 번째 모서리로 해석한다.
-        try:
-            c1 = go1.Object(0).Curve()
-        except:
-            c1 = None
+        rs.MessageBox(
+            "이 스크립트로 생성된 미닫이문 객체를 선택하세요.",
+            0,
+            "선택 오류"
+        )
+        clear_selection_and_redraw()
 
-        if not c1:
-            rs.MessageBox("선택한 객체에서 미닫이문 데이터를 찾지 못했습니다.\n수정하려면 이 스크립트로 생성된 미닫이문의 프레임 또는 유리 객체를 선택하세요.\n새로 만들려면 수직 모서리/커브를 선택하세요.", 0, "선택 오류")
-            clear_selection_and_redraw()
-            continue
 
-        go2 = Rhino.Input.Custom.GetObject()
-        go2.SetCommandPrompt("두 번째 수직 모서리를 선택하세요.")
-        go2.GeometryFilter = Rhino.DocObjects.ObjectType.Curve | Rhino.DocObjects.ObjectType.EdgeFilter
-        go2.SubObjectSelect = True
-        try:
-            go2.EnablePreSelect(False, True)
-        except:
-            pass
-        try:
-            go2.GroupSelect = False
-        except:
-            pass
+def get_door_target_from_user():
+    while True:
+        gp1 = Rhino.Input.Custom.GetPoint()
+        gp1.SetCommandPrompt("신규 미닫이문 사각형의 첫 번째 구석점을 지정하세요.")
+        opt_curves = gp1.AddOption("SelectCurves")
+        opt_edit = gp1.AddOption("Edit")
+        res = gp1.Get()
 
-        res2 = go2.Get()
-        if res2 == Rhino.Input.GetResult.Cancel:
-            return None
-
-        if res2 != Rhino.Input.GetResult.Object:
-            return None
-
-        try:
-            c2 = go2.Object(0).Curve()
-        except:
-            c2 = None
-
-        result = process_two_curves(c1, c2)
-        if result:
-            base_plane, width, height = result
+        if res == Rhino.Input.GetResult.Point:
+            base_plane, width, height = get_3point_rectangle(gp1.Point())
+            if base_plane is None:
+                return None
             return {"mode": "new", "base_plane": base_plane, "width": width, "height": height}
 
-        rs.MessageBox("새로 생성하려면 두 개의 수직 모서리/커브를 선택해야 합니다.\n다시 선택해 주세요.", 0, "선택 오류")
-        clear_selection_and_redraw()
+        if res == Rhino.Input.GetResult.Option:
+            option_index = gp1.Option().Index
+            if option_index == opt_curves:
+                return get_sliding_input_from_curves()
+            if option_index == opt_edit:
+                return get_sliding_edit_input()
+            continue
+
+        return None
 
     return None
 
@@ -1368,9 +1380,7 @@ def main():
     if rs.SelectedObjects():
         clear_selection_and_redraw()
 
-    # 2) 실행 후 사용자가 선택하는 객체를 보고 자동 판별
-    #    - 미닫이문 객체: 수정
-    #    - 수직 모서리/커브 2개 또는 Rectangle: 신규 생성
+    # 2) 기본은 사각형 입력이며, SelectCurves / Edit는 명령행 옵션으로 제공한다.
     target = get_door_target_from_user()
     if not target:
         return
