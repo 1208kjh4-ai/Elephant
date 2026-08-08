@@ -343,15 +343,12 @@ class BoundaryPreviewCallWiringTests(unittest.TestCase):
             self.function,
             "build_3d_seat_module_geometry",
         )
-        self.assertEqual(2, len(seat_calls))
-        custom_seat_calls = [
-            call
-            for call in seat_calls
-            if _contains_name(call, "tier_row_intervals")
-        ]
-        self.assertEqual(1, len(custom_seat_calls))
+        self.assertEqual(1, len(seat_calls))
         self.assertTrue(
-            _contains_name(custom_seat_calls[0], "tier_slot")
+            _contains_name(seat_calls[0], "tier_row_intervals")
+        )
+        self.assertTrue(
+            _contains_name(seat_calls[0], "tier_slot")
         )
 
     def test_radial_guides_use_clipped_segments(self):

@@ -332,7 +332,16 @@ class BoundaryFloorIntegrationAstTests(unittest.TestCase):
         width_expression = extrusion_calls[0].args[2]
         self.assertIsInstance(width_expression, ast.IfExp)
         self.assertEqual("source_floor_width", dotted_name(width_expression.body))
-        self.assertEqual("floor_width", dotted_name(width_expression.orelse))
+        source_width_expression = width_expression.orelse
+        self.assertIsInstance(source_width_expression, ast.IfExp)
+        self.assertEqual(
+            "floor_width",
+            dotted_name(source_width_expression.body),
+        )
+        self.assertEqual(
+            "source_width",
+            dotted_name(source_width_expression.orelse),
+        )
 
         flags = returned_boundary_flags(self.function)
         self.assertGreaterEqual(flags.count(False), 2)

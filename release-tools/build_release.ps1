@@ -52,6 +52,14 @@ function Remove-ReleaseClutter {
             Remove-Item -Force
     }
 
+    $excludedRelativeFiles = @("commands\TTest.py")
+    foreach ($relativePath in $excludedRelativeFiles) {
+        $excludedPath = Join-Path $Root $relativePath
+        if (Test-Path -LiteralPath $excludedPath -PathType Leaf) {
+            Remove-Item -LiteralPath $excludedPath -Force
+        }
+    }
+
     Get-ChildItem -LiteralPath $Root -Recurse -Force -Directory -Filter "__pycache__" |
         Sort-Object FullName -Descending |
         Remove-Item -Recurse -Force

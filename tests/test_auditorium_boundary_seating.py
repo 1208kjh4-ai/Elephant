@@ -377,7 +377,7 @@ class CustomBoundarySeatingTests(unittest.TestCase):
         self.assertEqual(6, count)
         placement_builder.assert_not_called()
 
-    def test_preview_builder_exposes_and_forwards_row_regions(self):
+    def test_preview_builder_exposes_regions_and_row_overrides(self):
         tree = ast.parse(SEAT_PREVIEW_PATH.read_text(encoding="utf-8"))
         functions = {
             node.name: node
@@ -386,7 +386,12 @@ class CustomBoundarySeatingTests(unittest.TestCase):
         }
         builder = functions["build_3d_seat_module_geometry"]
 
-        self.assertEqual("row_regions", builder.args.args[-1].arg)
+        self.assertEqual(
+            ["row_regions", "row_overrides"],
+            [argument.arg for argument in builder.args.args[-2:]],
+        )
+        self.assertIsInstance(builder.args.defaults[-2], ast.Constant)
+        self.assertIsNone(builder.args.defaults[-2].value)
         self.assertIsInstance(builder.args.defaults[-1], ast.Constant)
         self.assertIsNone(builder.args.defaults[-1].value)
         placement_calls = [
@@ -398,9 +403,20 @@ class CustomBoundarySeatingTests(unittest.TestCase):
                 and node.func.id == "calculate_3d_seat_placements"
             )
         ]
-        self.assertEqual([3, 4], sorted(
+        self.assertEqual([3, 3, 4, 4], sorted(
             len(call.args) for call in placement_calls
         ))
+        self.assertEqual(
+            2,
+            sum(
+                1
+                for call in placement_calls
+                if any(
+                    keyword.arg == "row_overrides"
+                    for keyword in call.keywords
+                )
+            ),
+        )
 
 
 if __name__ == "__main__":
